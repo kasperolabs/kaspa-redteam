@@ -20,11 +20,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 #[derive(Parser)]
-#[command(
-    name = "kaspa-redteam",
-    version,
-    about = "Attack your Kaspa covenant before mainnet does."
-)]
+#[command(name = "kaspa-redteam", version, about = "Attack your Kaspa covenant before mainnet does.")]
 #[command(args_conflicts_with_subcommands = true)]
 struct Cli {
     #[command(subcommand)]
@@ -40,6 +36,9 @@ struct ScanArgs {
     /// Constructor value: name=123 | name=0xhex | name=true | name=@party (test key)
     #[arg(long = "arg", value_name = "NAME=VALUE")]
     args: Vec<String>,
+    /// Honest transactions to attack, from your own harness (format: BASELINE.md). Repeatable.
+    #[arg(long = "baseline", value_name = "FILE")]
+    baselines: Vec<PathBuf>,
     #[command(flatten)]
     common: Common,
 }
@@ -69,6 +68,12 @@ struct Common {
 enum Cmd {
     /// Re-judge saved findings; exit 1 if any still reproduces
     Replay { files: Vec<PathBuf> },
+    /// Write the honest spends the search finds as a baseline file (a format example and an editable template)
+    Export {
+        file: PathBuf,
+        #[arg(long = "arg", value_name = "NAME=VALUE")]
+        args: Vec<String>,
+    },
     /// List the attack library
     List {
         #[arg(long)]
@@ -105,60 +110,80 @@ fn real_main() -> Result<ExitCode> {
     match cli.cmd {
         Some(Cmd::Replay { files }) => replay(&files),
         Some(Cmd::List { json }) => list(json),
-        Some(Cmd::Node {
-            kaspad,
-            nodes,
-            keep,
-            common,
-        }) => {
-            let opts = redteam_node::NodeOptions {
-                kaspad,
-                nodes,
-                keep_data: keep,
-            };
+        Some(Cmd::Export { file, args }) => {
+            let mut overrides = BTreeMap::new();
+            for kv in &args {
+                let (k, v) = kv.split_once('=').with_context(|| format!("--arg {kv}: expected NAME=VALUE"))?;
+                overrides.insert(k.trim().to_string(), v.trim().to_string());
+            }
+            let source = std::fs::read_to_string(&file).with_context(|| format!("read {}", file.display()))?;
+            let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let contract = redteam_covenant::contract::Contract::load(&name, &source, &overrides)?;
+            let judge = redteam_covenant::sandbox::Judge::new();
+            let paths = redteam_covenant::baseline::search_all(&contract, &judge);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&redteam_covenant::import::export(&contract, &judge, &paths)?)?
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Some(Cmd::Node { kaspad, nodes, keep, common }) => {
+            let opts = redteam_node::NodeOptions { kaspad, nodes, keep_data: keep };
             let report = redteam_node::run(&opts, &common.only)?;
             finish(report, &common)
         }
         None => {
-            let Some(file) = cli.scan.file.clone() else {
-                bail!("give a .sil file to attack, or a subcommand (try --help)");
-            };
-            scan(&file, &cli.scan)
+            if cli.scan.file.is_none() && cli.scan.baselines.is_empty() {
+                bail!("give a .sil file to attack, a --baseline file, or a subcommand (try --help)");
+            }
+            scan(&cli.scan)
         }
     }
 }
 
-fn scan(file: &PathBuf, a: &ScanArgs) -> Result<ExitCode> {
-    let source =
-        std::fs::read_to_string(file).with_context(|| format!("read {}", file.display()))?;
+fn scan(a: &ScanArgs) -> Result<ExitCode> {
     let mut overrides = BTreeMap::new();
     for kv in &a.args {
-        let (k, v) = kv
-            .split_once('=')
-            .with_context(|| format!("--arg {kv}: expected NAME=VALUE"))?;
+        let (k, v) = kv.split_once('=').with_context(|| format!("--arg {kv}: expected NAME=VALUE"))?;
         overrides.insert(k.trim().to_string(), v.trim().to_string());
     }
-    let name = file
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| file.display().to_string());
-    let contract = redteam_covenant::contract::Contract::load(&name, &source, &overrides)?;
-    let report = redteam_covenant::run(&contract, &a.common.only);
+    let short =
+        |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.display().to_string());
+    let contract = match &a.file {
+        Some(file) => {
+            let source = std::fs::read_to_string(file).with_context(|| format!("read {}", file.display()))?;
+            redteam_covenant::contract::Contract::load(&short(file), &source, &overrides)?
+        }
+        None => {
+            if !overrides.is_empty() {
+                bail!("--arg needs a .sil file");
+            }
+            let mut raw = Vec::new();
+            for b in &a.baselines {
+                raw.extend(std::fs::read(b).with_context(|| format!("read {}", b.display()))?);
+            }
+            let names: Vec<String> = a.baselines.iter().map(short).collect();
+            redteam_covenant::contract::Contract::for_import(&names.join(" + "), &raw)
+        }
+    };
+    let judge = redteam_covenant::sandbox::Judge::new();
+    let mut imported = Vec::new();
+    for b in &a.baselines {
+        imported.extend(redteam_covenant::import::load(b, &contract, &judge)?);
+    }
+    let report = redteam_covenant::run(&contract, &a.common.only, imported);
     finish(report, &a.common)
 }
 
 fn finish(mut report: RunReport, c: &Common) -> Result<ExitCode> {
     if !report.is_clean() {
-        write_findings(&mut report, &c.out)
-            .with_context(|| format!("write findings to {}", c.out.display()))?;
+        write_findings(&mut report, &c.out).with_context(|| format!("write findings to {}", c.out.display()))?;
     }
     if c.json {
         println!("{}", render_json(&report));
     } else {
         let style = TermStyle {
-            color: !c.no_color
-                && std::io::stdout().is_terminal()
-                && std::env::var_os("NO_COLOR").is_none(),
+            color: !c.no_color && std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none(),
         };
         print!("{}", render_terminal(&report, &style, c.verbose));
     }
@@ -167,10 +192,7 @@ fn finish(mut report: RunReport, c: &Common) -> Result<ExitCode> {
             let date = utc_date();
             std::fs::write("redteam-badge.svg", redteam_core::badge::svg(&report))?;
             let summary = redteam_core::badge::summary(&report, &date);
-            std::fs::write(
-                "redteam-summary.json",
-                serde_json::to_string_pretty(&summary)?,
-            )?;
+            std::fs::write("redteam-summary.json", serde_json::to_string_pretty(&summary)?)?;
             if !c.json {
                 println!("badge: redteam-badge.svg, redteam-summary.json");
             }
@@ -197,59 +219,36 @@ fn replay(files: &[PathBuf]) -> Result<ExitCode> {
                 );
             }
             redteam_covenant::sandbox::Verdict::Rejected(why) => {
-                println!(
-                    "rejected    {} on `{}`  tx {}  ({why})",
-                    r.id, r.path, r.tx_id
-                );
+                println!("rejected    {} on `{}`  tx {}  ({why})", r.id, r.path, r.tx_id);
             }
         }
     }
-    Ok(if reproduced > 0 {
-        ExitCode::from(1)
-    } else {
-        ExitCode::SUCCESS
-    })
+    Ok(if reproduced > 0 { ExitCode::from(1) } else { ExitCode::SUCCESS })
 }
 
 fn list(json: bool) -> Result<ExitCode> {
-    let mut rows: Vec<&'static redteam_core::AttackMeta> = redteam_covenant::registry()
-        .iter()
-        .map(|a| a.meta())
-        .collect();
+    let mut rows: Vec<&'static redteam_core::AttackMeta> =
+        redteam_covenant::registry().iter().map(|a| a.meta()).collect();
     rows.extend(redteam_node::registry().iter().map(|a| a.meta()));
     if json {
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(ExitCode::SUCCESS);
     }
-    println!(
-        "attack library v{}  ({} attacks)\n",
-        redteam_core::LIBRARY_VERSION,
-        rows.len()
-    );
+    println!("attack library v{}  ({} attacks)\n", redteam_core::LIBRARY_VERSION, rows.len());
     let mut last: Option<Target> = None;
     for m in rows {
         if last != Some(m.target) {
             println!("{} attacks", m.target.as_str());
             last = Some(m.target);
         }
-        println!(
-            "  {:<8} {:<9} {:<5} {:<50} catches: {}",
-            m.id,
-            m.pack,
-            m.severity.as_str(),
-            m.title,
-            m.catches
-        );
+        println!("  {:<8} {:<9} {:<5} {:<50} catches: {}", m.id, m.pack, m.severity.as_str(), m.title, m.catches);
     }
     Ok(ExitCode::SUCCESS)
 }
 
 /// YYYY-MM-DD from the system clock, no extra dependency.
 fn utc_date() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let days = (secs / 86_400) as i64;
     // Howard Hinnant's civil_from_days
     let z = days + 719_468;

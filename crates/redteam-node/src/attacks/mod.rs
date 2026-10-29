@@ -11,8 +11,8 @@ use kaspa_consensus_core::mass::MassCalculator;
 use kaspa_consensus_core::sign::sign;
 use kaspa_consensus_core::subnets::SubnetworkId;
 use kaspa_consensus_core::tx::{
-    MutableTransaction, PopulatedTransaction, Transaction, TransactionInput, TransactionOutpoint,
-    TransactionOutput, UtxoEntry,
+    MutableTransaction, PopulatedTransaction, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput,
+    UtxoEntry,
 };
 use redteam_core::{AttackMeta, Finding, Outcome};
 
@@ -25,10 +25,7 @@ pub(crate) fn p2pk_spend(
     coins: &[(TransactionOutpoint, UtxoEntry)],
     outputs: Vec<TransactionOutput>,
 ) -> Transaction {
-    let inputs = coins
-        .iter()
-        .map(|(op, _)| TransactionInput::new(*op, vec![], 0, 1))
-        .collect();
+    let inputs = coins.iter().map(|(op, _)| TransactionInput::new(*op, vec![], 0, 1)).collect();
     let entries: Vec<UtxoEntry> = coins.iter().map(|(_, e)| e.clone()).collect();
     let mut tx = Transaction::new(0, inputs, outputs, 0, SubnetworkId::default(), 0, vec![]);
     let mass = MassCalculator::new_with_consensus_params(&SIMNET_PARAMS);
@@ -60,8 +57,5 @@ pub(crate) fn finding(
 }
 
 pub(crate) fn found(attempts: usize, f: Finding) -> Outcome {
-    Outcome::Found {
-        attempts,
-        findings: vec![f],
-    }
+    Outcome::Found { attempts, findings: vec![f] }
 }

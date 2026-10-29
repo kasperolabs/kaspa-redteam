@@ -50,7 +50,10 @@ What you get in `cx`:
 - `cx.live_paths()` yields `(PathStatus, Baseline)` for every path with an honest spend that no earlier attack already took over.
 - `Baseline.plan` is a `SpendPlan`: inputs (covenant coins with argument recipes, or P2PK coins), outputs (`Dest::Key(KeyRef)` or `Dest::SelfCovenant`), lock time, DAA score, median time.
 - `Baseline.signers` lists the parties whose signatures the path needed; empty means anyone can build the spend. `Baseline.secrets` lists preimages it revealed.
-- Argument recipes: `ArgRecipe::Value`, `ArgRecipe::Sig(KeyRef)` (signed for real after the tx is final), `ArgRecipe::RawSig(bytes)`.
+- Argument recipes: `ArgRecipe::Value`, `ArgRecipe::Sig(KeyRef)` (signed for real after the tx is final), `ArgRecipe::RawSig(bytes)`, `ArgRecipe::DataSigOf { key, arg, hash }` (a reading over argument `arg`).
+- Inputs: `InputSpec::Covenant` (with an optional runtime `state`), `P2pk`, `StandIn` (a coin at an address the covenant names), `Raw` (imported). Use `plan.first_target()` to find the covenant input and `InputSpec::duplicate()` to add a second copy.
+- Destinations: `Dest::Key`, `SelfCovenant`, `Successor(state)`, `StandIn(i)`, `Raw(spk)`. `crate::dest_label` turns one into words.
+- Imported baselines (`--baseline`) arrive as ordinary paths with `imported: true`, so most attacks need no special handling.
 - Helpers in `attacks/mod.rs`: `pay_all_to_attacker`, `map_covenant_args`.
 
 Rules the runner enforces:

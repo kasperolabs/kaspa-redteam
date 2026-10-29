@@ -32,9 +32,7 @@ impl NodeAttack for Mine01 {
         match inflate(sim) {
             Ok(None) => Outcome::Survived { attempts: 1 },
             Ok(Some(f)) => found(1, f),
-            Err(e) => Outcome::Skipped {
-                reason: format!("{e:#}"),
-            },
+            Err(e) => Outcome::Skipped { reason: format!("{e:#}") },
         }
     }
 }
@@ -46,31 +44,20 @@ fn inflate(sim: &SimNet) -> anyhow::Result<Option<redteam_core::Finding>> {
     // Control: an untouched template block must become the sink, otherwise
     // the sink test below would prove nothing.
     let t = sim.block_on(sim.rpc(0).get_block_template(sim.miner.address(), vec![]))?;
-    let honest: Block = t
-        .block
-        .clone()
-        .try_into()
-        .map_err(|e| anyhow::anyhow!("template decode: {e:?}"))?;
+    let honest: Block = t.block.clone().try_into().map_err(|e| anyhow::anyhow!("template decode: {e:?}"))?;
     sim.block_on(sim.rpc(0).submit_block(t.block, false))?;
     if sim.block_on(sim.rpc(0).get_block_dag_info())?.sink != honest.hash() {
-        anyhow::bail!(
-            "control failed: an honest block did not become the sink, so the check is not meaningful here"
-        );
+        anyhow::bail!("control failed: an honest block did not become the sink, so the check is not meaningful here");
     }
     let t = sim.block_on(sim.rpc(0).get_block_template(sim.miner.address(), vec![]))?;
-    let block: Block = t
-        .block
-        .try_into()
-        .map_err(|e| anyhow::anyhow!("template decode: {e:?}"))?;
+    let block: Block = t.block.try_into().map_err(|e| anyhow::anyhow!("template decode: {e:?}"))?;
     let mut txs = (*block.transactions).clone();
     let coinbase = &mut txs[0];
     let how = if let Some(o) = coinbase.outputs.first_mut() {
         o.value += 1;
         "first coinbase output raised by 1 sompi"
     } else {
-        coinbase
-            .outputs
-            .push(TransactionOutput::new(1, sim.miner.p2pk()));
+        coinbase.outputs.push(TransactionOutput::new(1, sim.miner.p2pk()));
         "1 sompi coinbase output added where none was due"
     };
     coinbase.finalize();
@@ -88,11 +75,7 @@ fn inflate(sim: &SimNet) -> anyhow::Result<Option<redteam_core::Finding>> {
         "submitBlock {} ({how}) -> {:?}, sink is {}",
         bad.hash(),
         r.report,
-        if sink == bad.hash() {
-            "it"
-        } else {
-            "another block"
-        }
+        if sink == bad.hash() { "it" } else { "another block" }
     ));
     if r.report.is_success() && sink == bad.hash() {
         let f = finding(

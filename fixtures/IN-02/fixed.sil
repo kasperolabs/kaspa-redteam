@@ -1,0 +1,10 @@
+// IN-02 fixed: measured against this coin, and alone.
+pragma silverscript ^0.1.0;
+
+contract Payout(pubkey payee, int maxFee) {
+    entry pay() {
+        require(tx.inputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(payee)));
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - maxFee);
+    }
+}

@@ -63,24 +63,20 @@ pub struct CovenantPlugin(pub &'static dyn CovenantAttack);
 inventory::collect!(CovenantPlugin);
 
 pub fn registry() -> Vec<&'static dyn CovenantAttack> {
-    let mut v: Vec<&'static dyn CovenantAttack> = inventory::iter::<CovenantPlugin>
-        .into_iter()
-        .map(|p| p.0)
-        .collect();
+    let mut v: Vec<&'static dyn CovenantAttack> = inventory::iter::<CovenantPlugin>.into_iter().map(|p| p.0).collect();
     v.sort_by(|a, b| a.order().cmp(&b.order()).then(a.meta().id.cmp(b.meta().id)));
     v
 }
 
-pub fn run(contract: &Contract, only: &[String]) -> RunReport {
+/// Searches baselines for every path of `contract`, adds `imported` ones
+/// (from `--baseline` files), and runs every selected attack.
+pub fn run(contract: &Contract, only: &[String], imported: Vec<PathStatus>) -> RunReport {
     let started = Instant::now();
     let judge = Judge::new();
-    let paths = baseline::search_all(contract, &judge);
-    let cx = AttackCx {
-        contract,
-        judge: &judge,
-        paths: &paths,
-        compromised: RefCell::new(BTreeSet::new()),
-    };
+    let mut paths = baseline::search_all(contract, &judge);
+    let imported_count = imported.len();
+    paths.extend(imported);
+    let cx = AttackCx { contract, judge: &judge, paths: &paths, compromised: RefCell::new(BTreeSet::new()) };
 
     let mut results = Vec::new();
     for attack in registry() {
@@ -91,9 +87,9 @@ pub fn run(contract: &Contract, only: &[String]) -> RunReport {
         let t = Instant::now();
         let outcome = match attack.attempts(&cx) {
             Err(reason) => Outcome::Skipped { reason },
-            Ok(list) if list.is_empty() => Outcome::Skipped {
-                reason: "no explored path this attack applies to".into(),
-            },
+            Ok(list) if list.is_empty() => {
+                Outcome::Skipped { reason: "no explored path this attack applies to".into() }
+            }
             Ok(list) => judge_attempts(&cx, meta, list),
         };
         results.push(AttackResult {
@@ -107,16 +103,32 @@ pub fn run(contract: &Contract, only: &[String]) -> RunReport {
     }
 
     let mut notes = Vec::new();
+    let mut noted = BTreeSet::new();
     for p in &paths {
+        let explored_somewhere = paths.iter().any(|q| q.name == p.name && q.baseline.is_some());
         if let Some(why) = &p.unexplored_reason {
-            notes.push(format!(
-                "path `{}` unexplored ({why}); attacks did not cover it",
-                p.entry
-            ));
+            if !explored_somewhere && noted.insert(p.name.clone()) {
+                notes.push(format!("path `{}` unexplored ({why}); attacks did not cover it", p.name));
+            }
         }
     }
+    let mut seen_states = Vec::new();
+    for s in paths.iter().filter_map(|p| p.state.as_ref()) {
+        if !seen_states.contains(&s) {
+            seen_states.push(s);
+        }
+    }
+    let states = seen_states.len();
+    if states > 0 {
+        notes.push(format!("stateful covenant: explored the start state and {states} later state(s)"));
+    }
+    if imported_count > 0 {
+        notes.push(format!("{imported_count} baseline transaction(s) imported and attacked as given"));
+    }
     if contract.has_covenant_decls {
-        notes.push("covenant declarations (#[covenant]) are compiled but their continuation rules are not attacked yet".into());
+        notes.push(
+            "covenant declarations (#[covenant]) are compiled but their continuation rules are not attacked yet".into(),
+        );
     }
     notes.push("judge: rusty-kaspa consensus validator 2.1.0 in process (mempool relay policy not applied)".into());
 
@@ -154,22 +166,41 @@ fn judge_attempts(cx: &AttackCx, meta: &'static AttackMeta, list: Vec<Attempt>) 
             if a.takeover {
                 cx.compromised.borrow_mut().insert(a.path.clone());
             }
+            // A stand-in coin is anyone-can-spend in the sandbox. On chain it is
+            // spendable by whoever the real covenant at that address allows, so
+            // say who the attacker really has to be.
+            let mut explanation = a.explanation.clone();
+            let stand_ins: Vec<String> = a
+                .plan
+                .inputs
+                .iter()
+                .filter_map(|i| match i {
+                    crate::sandbox::InputSpec::StandIn { target, .. } => {
+                        Some(cx.contract.stand_ins[*target].label.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !stand_ins.is_empty() {
+                explanation.push_str(&format!(
+                    " Note: the spend also uses a coin at `{}`'s address, which the sandbox lets anyone spend; on chain, only whoever can spend that coin can do this.",
+                    stand_ins.join("`, `")
+                ));
+            }
             findings.push(Finding {
                 id: meta.id.into(),
                 title: meta.title.into(),
                 severity: a.severity.unwrap_or(meta.severity),
                 target: Target::Covenant,
                 subject: a.path.clone(),
-                explanation: a.explanation.clone(),
+                explanation,
                 fix_pattern: meta.fix_pattern.into(),
                 repro: crate::replay::repro_json(cx.contract, &a, &b, fee),
             });
         }
     }
     if attempts == 0 {
-        Outcome::Skipped {
-            reason: "every path it applies to was already taken over by an earlier finding".into(),
-        }
+        Outcome::Skipped { reason: "every path it applies to was already taken over by an earlier finding".into() }
     } else if findings.is_empty() {
         Outcome::Survived { attempts }
     } else {

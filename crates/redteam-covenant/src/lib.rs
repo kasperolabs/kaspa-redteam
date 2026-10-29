@@ -10,6 +10,7 @@
 pub mod attacks;
 pub mod baseline;
 pub mod contract;
+pub mod import;
 pub mod replay;
 pub mod runner;
 pub mod sandbox;
@@ -18,7 +19,7 @@ pub mod wallets;
 
 use baseline::PathStatus;
 use contract::Contract;
-use sandbox::{COVENANT_VALUE, Dest, SOMPI_PER_KAS};
+use sandbox::{Dest, SOMPI_PER_KAS};
 
 pub use runner::{AttackCx, Attempt, CovenantAttack, CovenantPlugin, registry, run};
 
@@ -33,17 +34,32 @@ pub fn kas(sompi: u64) -> String {
     }
 }
 
+/// Who an output pays, in words.
+pub fn dest_label(c: &Contract, d: &Dest) -> String {
+    match d {
+        Dest::Key(k) => c.wallets.label(*k),
+        Dest::SelfCovenant => "the covenant (change)".into(),
+        Dest::Successor(st) => format!("the covenant, next state [{}]", baseline::state_label(c, st)),
+        Dest::StandIn(i) => format!("{} (its P2SH address)", c.stand_ins[*i].label),
+        Dest::Raw(spk) => {
+            let hex = faster_hex::hex_string(spk.script());
+            format!("script {}..", &hex[..hex.len().min(16)])
+        }
+    }
+}
+
 /// Plain-language map of who can spend each path and where the money went in
-/// the honest spend the search found.
+/// the honest spend the search found. Entries never explored in any state are
+/// listed once with the reason.
 pub fn spend_map(c: &Contract, paths: &[PathStatus]) -> serde_json::Value {
+    let explored = |name: &str| paths.iter().any(|p| p.name == name && p.baseline.is_some());
+    let mut shown_unexplored = std::collections::BTreeSet::new();
     let rows: Vec<_> = paths
         .iter()
+        .filter(|p| p.baseline.is_some() || (!explored(&p.name) && shown_unexplored.insert(p.name.clone())))
         .map(|p| {
             let summary = match &p.baseline {
-                None => format!(
-                    "unexplored: {}",
-                    p.unexplored_reason.clone().unwrap_or_default()
-                ),
+                None => format!("unexplored: {}", p.unexplored_reason.clone().unwrap_or_default()),
                 Some(b) => {
                     let who = if b.signers.contains(&wallets::KeyRef::Attacker) {
                         "anyone with any key (the covenant names no key for this path)".to_string()
@@ -51,10 +67,7 @@ pub fn spend_map(c: &Contract, paths: &[PathStatus]) -> serde_json::Value {
                         let names: Vec<_> = b.signers.iter().map(|k| c.wallets.label(*k)).collect();
                         format!("signed by {}", names.join(" + "))
                     } else if !b.secrets.is_empty() {
-                        format!(
-                            "anyone who knows secret `{}` (no signature)",
-                            b.secrets.join("`, `")
-                        )
+                        format!("anyone holding {} (no transaction signature)", b.secrets.join(" + "))
                     } else {
                         "anyone, no signature".to_string()
                     };
@@ -62,29 +75,20 @@ pub fn spend_map(c: &Contract, paths: &[PathStatus]) -> serde_json::Value {
                         .plan
                         .outputs
                         .iter()
-                        .map(|o| {
-                            let to = match &o.to {
-                                Dest::Key(k) => c.wallets.label(*k),
-                                Dest::SelfCovenant => "the covenant (change)".into(),
-                            };
-                            format!("{} to {to}", kas(o.value))
-                        })
+                        .map(|o| format!("{} to {}", kas(o.value), dest_label(c, &o.to)))
                         .collect();
                     let lock = b
                         .lock
                         .as_ref()
-                        .map(|l| {
-                            format!(
-                                "; needs {} >= {} (earliest accepted {})",
-                                l.field, l.used, l.earliest
-                            )
-                        })
+                        .map(|l| format!("; needs {} >= {} (earliest accepted {})", l.field, l.used, l.earliest))
                         .unwrap_or_default();
-                    format!(
-                        "{who}; from a {} coin pays {}{lock}",
-                        kas(COVENANT_VALUE),
-                        pays.join(", ")
-                    )
+                    let from = if b.plan.inputs.len() > 1 {
+                        format!("{} inputs worth {}", b.plan.inputs.len(), kas(b.plan.input_total()))
+                    } else {
+                        format!("a {} coin", kas(b.plan.input_total()))
+                    };
+                    let origin = if p.imported { " [imported]" } else { "" };
+                    format!("{who}; from {from} pays {}{lock}{origin}", pays.join(", "))
                 }
             };
             serde_json::json!({

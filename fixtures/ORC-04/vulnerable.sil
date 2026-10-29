@@ -1,0 +1,16 @@
+// ORC-04 vulnerable: the reading is verified against a key the spender passes in.
+pragma silverscript ^0.1.0;
+
+contract Release(pubkey renter, byte[32] sessionId) {
+    entry release(datasig s, byte[] msg, pubkey signer) {
+        require(msg.length == 36);
+        require(checkMsgSig(s, byte[32](blake2b(msg)), signer));
+        (byte[] tag, byte[] sid) = msg.split(4);
+        require(tag == byte[](0x52454c53));
+        require(sid == byte[](sessionId));
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(renter)));
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - 2000000);
+    }
+}

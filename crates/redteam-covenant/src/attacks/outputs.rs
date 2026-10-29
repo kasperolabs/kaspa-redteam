@@ -12,10 +12,7 @@ use crate::wallets::KeyRef;
 use redteam_core::{AttackMeta, Severity, Target};
 
 fn dest_label(cx: &AttackCx, d: &Dest) -> String {
-    match d {
-        Dest::Key(k) => cx.contract.wallets.label(*k),
-        Dest::SelfCovenant => "the covenant itself".into(),
-    }
+    crate::dest_label(cx.contract, d)
 }
 
 pub struct Out01;
@@ -38,10 +35,7 @@ impl CovenantAttack for Out01 {
     }
     fn attempts(&self, cx: &AttackCx) -> Result<Vec<Attempt>, String> {
         let mut out = Vec::new();
-        for (p, b) in cx
-            .live_paths()
-            .filter(|(_, b)| b.permissionless() && b.secrets.is_empty())
-        {
+        for (p, b) in cx.live_paths().filter(|(_, b)| b.permissionless() && b.secrets.is_empty()) {
             out.push(Attempt {
                 path: p.entry.clone(),
                 label: "every output replaced by one attacker output".into(),
@@ -100,10 +94,7 @@ impl CovenantAttack for Out02 {
                 continue;
             }
             plan.outputs[0].value = reduced;
-            plan.outputs.push(OutputSpec {
-                value: honest - reduced,
-                to: Dest::Key(KeyRef::Attacker),
-            });
+            plan.outputs.push(OutputSpec::new(honest - reduced, Dest::Key(KeyRef::Attacker)));
             out.push(Attempt {
                 path: p.entry.clone(),
                 label: "output 0 cut to 10%, difference to attacker".into(),
@@ -155,10 +146,7 @@ impl CovenantAttack for Out03 {
                 let honest = plan.outputs[j].value;
                 let half = honest / 2;
                 plan.outputs[j].value = honest - half;
-                plan.outputs.push(OutputSpec {
-                    value: half,
-                    to: Dest::Key(KeyRef::Attacker),
-                });
+                plan.outputs.push(OutputSpec::new(half, Dest::Key(KeyRef::Attacker)));
                 out.push(Attempt {
                     path: p.entry.clone(),
                     label: format!("output 0 untouched, output {j} halved, half to attacker"),

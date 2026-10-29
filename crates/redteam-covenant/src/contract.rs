@@ -2,11 +2,30 @@
 //! arguments (test keys by default), compile in process, and describe the
 //! spend paths.
 
-use crate::script;
+use crate::sandbox::{MsgHash, StateValues};
+use crate::script::{self, Token};
 use crate::wallets::{KeyRef, Wallets};
 use anyhow::{Context, Result, anyhow, bail};
 use silverscript_abi::{ArtifactValue, SilAbiArtifact, TypeArtifact};
 use std::collections::BTreeMap;
+
+/// An address the covenant names by hash (`ScriptPubKeyP2SH(h)`), standing in
+/// for another covenant. The sandbox gives it a redeem script anyone can spend,
+/// so the covenant can pay it or find a coin of it next to itself.
+#[derive(Debug, Clone)]
+pub struct StandIn {
+    pub label: String,
+    pub redeem: Vec<u8>,
+}
+
+impl StandIn {
+    fn new(label: &str) -> Self {
+        // <label> OP_DROP OP_TRUE
+        let mut redeem = crate::sandbox::push_data(format!("redteam-standin:{label}").as_bytes()).expect("small push");
+        redeem.extend_from_slice(&[0x75, 0x51]);
+        Self { label: label.into(), redeem }
+    }
+}
 
 /// A secret the tool knows the preimage of. Constructor hash parameters are
 /// filled with sha256(preimage), so hash-lock paths stay explorable.
@@ -39,9 +58,7 @@ pub struct Entry {
 
 impl Entry {
     pub fn has_sig(&self) -> bool {
-        self.params
-            .iter()
-            .any(|p| matches!(p.ty, TypeArtifact::Sig))
+        self.params.iter().any(|p| matches!(p.ty, TypeArtifact::Sig))
     }
 }
 
@@ -50,8 +67,19 @@ pub struct Contract {
     pub source: String,
     pub contract_name: String,
     pub args: Vec<CtorArg>,
-    pub artifact: SilAbiArtifact,
+    /// None for a run built only from imported baselines.
+    pub artifact: Option<SilAbiArtifact>,
     pub bytecode: Vec<u8>,
+    /// Runtime state fields (`int claimed = 0;`), in declaration order.
+    pub state_fields: Vec<(String, TypeArtifact)>,
+    /// The state the deployed coin starts in.
+    pub initial_state: Option<StateValues>,
+    pub stand_ins: Vec<StandIn>,
+    /// How `checkMsgSig` hashes its message in this source.
+    pub msg_hash: MsgHash,
+    /// Candidate messages for data-signature paths, built from the constants
+    /// the script checks (tags, ids, lengths).
+    pub msg_candidates: Vec<Vec<u8>>,
     pub entries: Vec<Entry>,
     pub wallets: Wallets,
     pub secrets: Vec<Secret>,
@@ -67,44 +95,30 @@ pub struct Contract {
 
 impl Contract {
     /// `overrides`: `name=value` pairs from the command line.
-    pub fn load(
-        file_name: &str,
-        source: &str,
-        overrides: &BTreeMap<String, String>,
-    ) -> Result<Self> {
-        let ast = silverscript_lang::ast::parse_contract_ast(source)
-            .map_err(|e| anyhow!("parse error: {e}"))?;
+    pub fn load(file_name: &str, source: &str, overrides: &BTreeMap<String, String>) -> Result<Self> {
+        let ast = silverscript_lang::ast::parse_contract_ast(source).map_err(|e| anyhow!("parse error: {e}"))?;
         let mut wallets = Wallets::new();
         let mut secrets = Vec::new();
         let mut args = Vec::new();
         let mut ctor_ints = Vec::new();
+        let mut stand_ins = Vec::new();
 
         for p in &ast.params {
             let type_name = p.type_ref.type_name();
             let ty = parse_type(&type_name).with_context(|| format!("constructor `{}`", p.name))?;
             let (value, origin) = match overrides.get(&p.name) {
                 Some(raw) => (
-                    parse_override(raw, &ty, &mut wallets)
-                        .with_context(|| format!("--arg {}", p.name))?,
+                    parse_override(raw, &ty, &mut wallets).with_context(|| format!("--arg {}", p.name))?,
                     "override".into(),
                 ),
-                None => default_value(source, &p.name, &ty, &mut wallets, &mut secrets)
-                    .with_context(|| {
-                        format!(
-                            "constructor `{}` ({type_name}) needs a value: pass --arg {}=...",
-                            p.name, p.name
-                        )
-                    })?,
+                None => default_value(source, &p.name, &ty, &mut wallets, &mut secrets, &mut stand_ins).with_context(
+                    || format!("constructor `{}` ({type_name}) needs a value: pass --arg {}=...", p.name, p.name),
+                )?,
             };
             if let ArtifactValue::Int(n) = value {
                 ctor_ints.push(n);
             }
-            args.push(CtorArg {
-                name: p.name.clone(),
-                ty: type_name,
-                origin,
-                value,
-            });
+            args.push(CtorArg { name: p.name.clone(), ty: type_name, origin, value });
         }
         for k in overrides.keys() {
             if !ast.params.iter().any(|p| &p.name == k) {
@@ -116,10 +130,7 @@ impl Contract {
         let artifact = silverscript_lang::compiler::compile_to_sil_abi_artifact(source, &values)
             .map_err(|e| anyhow!("compile error: {e}"))?;
         if artifact.contracts.len() != 1 {
-            bail!(
-                "expected exactly one contract in the file, found {}",
-                artifact.contracts.len()
-            );
+            bail!("expected exactly one contract in the file, found {}", artifact.contracts.len());
         }
         let (contract_name, c) = artifact.contracts.iter().next().unwrap();
         let bytecode = c.compiled.bytecode.clone();
@@ -128,18 +139,40 @@ impl Contract {
             .iter()
             .map(|(name, e)| Entry {
                 name: name.clone(),
-                params: e
-                    .params
-                    .iter()
-                    .map(|p| EntryParam {
-                        name: p.name.clone(),
-                        ty: p.ty.clone(),
-                    })
-                    .collect(),
+                params: e.params.iter().map(|p| EntryParam { name: p.name.clone(), ty: p.ty.clone() }).collect(),
             })
             .collect();
         let (cltv_values, csv_values) = script::lock_values(&bytecode);
         let has_covenant_decls = !c.cov_decl_to_abi.is_empty();
+
+        let state_fields: Vec<(String, TypeArtifact)> =
+            c.runtime_state.fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect();
+        let initial_state = if state_fields.is_empty() || c.compiled.state_span.len == 0 {
+            None
+        } else {
+            let span =
+                &bytecode[c.compiled.state_span.offset..c.compiled.state_span.offset + c.compiled.state_span.len];
+            Some(
+                silverscript_abi::decode_runtime_state_script(&artifact, &c.runtime_state, span)
+                    .map_err(|e| anyhow!("decode initial state: {e}"))?,
+            )
+        };
+        let dispatch_tags: Vec<Vec<u8>> = c.entries.values().map(|e| e.dispatch_tag.as_bytes().to_vec()).collect();
+        // Ids a reading may carry: byte[32] constructor values (not pubkeys).
+        let v32s: Vec<Vec<u8>> = args
+            .iter()
+            .filter(|a| a.ty == "byte[32]")
+            .filter_map(|a| match &a.value {
+                ArtifactValue::Bytes(b) if b.len() == 32 => Some(b.clone()),
+                _ => None,
+            })
+            .collect();
+        let msg_candidates = message_candidates(&bytecode, &dispatch_tags, &v32s, &ctor_ints);
+        let msg_hash = if source.lines().filter(|l| l.contains("checkMsgSig")).any(|l| l.contains("sha256")) {
+            MsgHash::Sha256
+        } else {
+            MsgHash::Blake2b
+        };
 
         Ok(Self {
             file_name: file_name.into(),
@@ -155,9 +188,58 @@ impl Contract {
             entries,
             wallets,
             secrets,
+            state_fields,
+            initial_state,
+            stand_ins,
+            msg_hash,
+            msg_candidates,
             bytecode,
-            artifact: artifact.clone(),
+            artifact: Some(artifact.clone()),
         })
+    }
+
+    /// A contract-less subject for runs built only from imported baselines.
+    pub fn for_import(name: &str, raw: &[u8]) -> Self {
+        Self {
+            file_name: name.into(),
+            source: String::from_utf8_lossy(raw).into(),
+            contract_name: String::new(),
+            args: vec![],
+            artifact: None,
+            bytecode: vec![],
+            state_fields: vec![],
+            initial_state: None,
+            stand_ins: vec![],
+            msg_hash: MsgHash::Blake2b,
+            msg_candidates: vec![],
+            entries: vec![],
+            wallets: Wallets::new(),
+            secrets: vec![],
+            sig_ops: 1,
+            pushed_ints: vec![],
+            cltv_values: vec![],
+            csv_values: vec![],
+            ctor_ints: vec![],
+            has_covenant_decls: false,
+        }
+    }
+
+    /// The redeem script of this covenant in `state` (None = as compiled).
+    pub fn script_for(&self, state: Option<&StateValues>) -> Result<Vec<u8>> {
+        let Some(state) = state else { return Ok(self.bytecode.clone()) };
+        let abi = self.artifact.as_ref().ok_or_else(|| anyhow!("no compiled contract"))?;
+        let c = abi.contracts.values().next().ok_or_else(|| anyhow!("no contract"))?;
+        let span = c.compiled.state_span;
+        let encoded = silverscript_abi::encode_runtime_state_script(abi, &c.runtime_state, state)
+            .map_err(|e| anyhow!("encode state: {e}"))?;
+        let mut out = self.bytecode[..span.offset].to_vec();
+        out.extend(encoded);
+        out.extend_from_slice(&self.bytecode[span.offset + span.len..]);
+        Ok(out)
+    }
+
+    pub fn is_stateful(&self) -> bool {
+        self.initial_state.is_some()
     }
 
     pub fn entry(&self, name: &str) -> Option<&Entry> {
@@ -175,11 +257,7 @@ impl Contract {
         if bytes == self.wallets.attacker.xonly() {
             return Some(KeyRef::Attacker);
         }
-        self.wallets
-            .parties
-            .iter()
-            .position(|w| w.xonly() == bytes)
-            .map(KeyRef::Party)
+        self.wallets.parties.iter().position(|w| w.xonly() == bytes).map(KeyRef::Party)
     }
 }
 
@@ -195,11 +273,7 @@ pub fn parse_type(name: &str) -> Result<TypeArtifact> {
         parts.push(if inner.is_empty() {
             None
         } else {
-            Some(
-                inner
-                    .parse()
-                    .map_err(|_| anyhow!("unsupported array size `{inner}`"))?,
-            )
+            Some(inner.parse().map_err(|_| anyhow!("unsupported array size `{inner}`"))?)
         });
     }
     let mut ty = match (base, parts.first()) {
@@ -207,17 +281,10 @@ pub fn parse_type(name: &str) -> Result<TypeArtifact> {
         ("byte", Some(None)) => TypeArtifact::Bytes,
         _ => TypeArtifact::from_parts(base, None),
     };
-    let skip = if base == "byte" && !parts.is_empty() {
-        1
-    } else {
-        0
-    };
+    let skip = if base == "byte" && !parts.is_empty() { 1 } else { 0 };
     for d in parts.into_iter().skip(skip) {
         ty = match d {
-            Some(len) => TypeArtifact::FixedArray {
-                item: Box::new(ty),
-                len,
-            },
+            Some(len) => TypeArtifact::FixedArray { item: Box::new(ty), len },
             None => TypeArtifact::DynamicArray { item: Box::new(ty) },
         };
     }
@@ -231,14 +298,12 @@ fn sha256(b: &[u8]) -> Vec<u8> {
 
 /// Unkeyed blake2b-256, SilverScript's `blake2b()`.
 pub fn blake2b(b: &[u8]) -> Vec<u8> {
-    blake2b_simd::Params::new()
-        .hash_length(32)
-        .hash(b)
-        .as_bytes()
-        .to_vec()
+    blake2b_simd::Params::new().hash_length(32).hash(b).as_bytes().to_vec()
 }
 
 enum HashUse {
+    /// `ScriptPubKeyP2SH(h)`: the address of another covenant.
+    P2shTarget,
     PubkeyBlake2b,
     SecretSha256,
     SecretBlake2b,
@@ -253,19 +318,15 @@ fn hash_use(source: &str, name: &str) -> HashUse {
     let mentions = |line: &str| {
         line.match_indices(name).any(|(i, _)| {
             let before = line[..i].chars().next_back().is_none_or(|c| !is_ident(c));
-            let after = line[i + name.len()..]
-                .chars()
-                .next()
-                .is_none_or(|c| !is_ident(c));
+            let after = line[i + name.len()..].chars().next().is_none_or(|c| !is_ident(c));
             before && after
         })
     };
-    let lines: Vec<&str> = source
-        .lines()
-        .filter(|l| mentions(l) && !l.trim_start().starts_with("contract"))
-        .collect();
+    let lines: Vec<&str> = source.lines().filter(|l| mentions(l) && !l.trim_start().starts_with("contract")).collect();
     let any = |pat: &str| lines.iter().any(|l| l.contains(pat));
-    if any("blake2b(byte[](") || (any("blake2b(") && (any("pk") || any("pubkey") || any("Pk"))) {
+    if any("ScriptPubKeyP2SH(") {
+        HashUse::P2shTarget
+    } else if any("blake2b(byte[](") || (any("blake2b(") && (any("pk") || any("pubkey") || any("Pk"))) {
         HashUse::PubkeyBlake2b
     } else if any("blake2b(") {
         HashUse::SecretBlake2b
@@ -276,14 +337,16 @@ fn hash_use(source: &str, name: &str) -> HashUse {
 
 fn int_default(name: &str) -> i64 {
     let n = name.to_ascii_lowercase();
+    let counts = ["periods", "count", "installments", "rounds", "slots", "max_ins", "maxins"];
     if n.contains("fee") {
         50_000
-    } else if [
-        "time", "lock", "deadline", "age", "daa", "after", "until", "period", "delay", "blocks",
-        "duration",
-    ]
-    .iter()
-    .any(|k| n.contains(k))
+    } else if n.contains("bps") || n.contains("basis") {
+        500 // 5%
+    } else if counts.iter().any(|k| n.contains(k)) || n == "n" {
+        2
+    } else if ["time", "lock", "deadline", "age", "daa", "after", "until", "period", "delay", "blocks", "duration"]
+        .iter()
+        .any(|k| n.contains(k))
     {
         1_000
     } else {
@@ -297,6 +360,7 @@ fn default_value(
     ty: &TypeArtifact,
     w: &mut Wallets,
     secrets: &mut Vec<Secret>,
+    stand_ins: &mut Vec<StandIn>,
 ) -> Result<(ArtifactValue, String)> {
     Ok(match ty {
         TypeArtifact::Int => (ArtifactValue::Int(int_default(name)), "default".into()),
@@ -316,58 +380,44 @@ fn default_value(
         TypeArtifact::Text => (ArtifactValue::Text("redteam".into()), "default".into()),
         TypeArtifact::Pubkey => {
             let i = w.party(name);
-            (
-                ArtifactValue::Bytes(w.parties[i].xonly().to_vec()),
-                format!("party:{name}"),
-            )
+            (ArtifactValue::Bytes(w.parties[i].xonly().to_vec()), format!("party:{name}"))
         }
         TypeArtifact::FixedBytes { len: 32 } => match hash_use(source, name) {
+            HashUse::P2shTarget => {
+                let st = StandIn::new(name);
+                let h = blake2b(&st.redeem);
+                stand_ins.push(st);
+                (ArtifactValue::Bytes(h), format!("p2sh(stand-in:{name})"))
+            }
             HashUse::PubkeyBlake2b => {
                 let i = w.party(name);
-                (
-                    ArtifactValue::Bytes(blake2b(&w.parties[i].xonly())),
-                    format!("blake2b(party:{name})"),
-                )
+                (ArtifactValue::Bytes(blake2b(&w.parties[i].xonly())), format!("blake2b(party:{name})"))
             }
             HashUse::SecretBlake2b => {
                 let preimage = format!("redteam-secret:{name}").into_bytes();
-                secrets.push(Secret {
-                    label: name.into(),
-                    preimage: preimage.clone(),
-                });
-                (
-                    ArtifactValue::Bytes(blake2b(&preimage)),
-                    format!("blake2b(secret:{name})"),
-                )
+                secrets.push(Secret { label: name.into(), preimage: preimage.clone() });
+                (ArtifactValue::Bytes(blake2b(&preimage)), format!("blake2b(secret:{name})"))
             }
             HashUse::SecretSha256 => {
                 let preimage = format!("redteam-secret:{name}").into_bytes();
-                secrets.push(Secret {
-                    label: name.into(),
-                    preimage: preimage.clone(),
-                });
-                (
-                    ArtifactValue::Bytes(sha256(&preimage)),
-                    format!("sha256(secret:{name})"),
-                )
+                secrets.push(Secret { label: name.into(), preimage: preimage.clone() });
+                (ArtifactValue::Bytes(sha256(&preimage)), format!("sha256(secret:{name})"))
             }
         },
-        TypeArtifact::FixedBytes { len } => {
-            (ArtifactValue::Bytes(vec![0x11; *len]), "default".into())
-        }
+        TypeArtifact::FixedBytes { len } => (ArtifactValue::Bytes(vec![0x11; *len]), "default".into()),
         TypeArtifact::Sig => (ArtifactValue::Bytes(vec![0; 65]), "default".into()),
         TypeArtifact::Datasig => (ArtifactValue::Bytes(vec![0; 64]), "default".into()),
         TypeArtifact::FixedArray { item, len } => {
             let mut v = Vec::with_capacity(*len);
             for k in 0..*len {
-                v.push(default_value(source, &format!("{name}[{k}]"), item, w, secrets)?.0);
+                v.push(default_value(source, &format!("{name}[{k}]"), item, w, secrets, stand_ins)?.0);
             }
             (ArtifactValue::Array(v), "default".into())
         }
         TypeArtifact::DynamicArray { item } => {
             let mut v = Vec::new();
             for k in 0..2 {
-                v.push(default_value(source, &format!("{name}[{k}]"), item, w, secrets)?.0);
+                v.push(default_value(source, &format!("{name}[{k}]"), item, w, secrets, stand_ins)?.0);
             }
             (ArtifactValue::Array(v), "default".into())
         }
@@ -391,14 +441,64 @@ fn parse_override(raw: &str, ty: &TypeArtifact, w: &mut Wallets) -> Result<Artif
         });
     }
     match ty {
-        TypeArtifact::Int | TypeArtifact::Temporal => {
-            Ok(ArtifactValue::Int(raw.replace('_', "").parse()?))
-        }
+        TypeArtifact::Int | TypeArtifact::Temporal => Ok(ArtifactValue::Int(raw.replace('_', "").parse()?)),
         TypeArtifact::Bool => Ok(ArtifactValue::Bool(raw.parse()?)),
         TypeArtifact::Byte => Ok(ArtifactValue::Byte(raw.parse()?)),
         TypeArtifact::Text => Ok(ArtifactValue::Text(raw.into())),
         other => bail!("use 0x-hex or @party for type {other:?}"),
     }
+}
+
+/// Messages a data-signature path might accept, built from what the script
+/// itself compares against: 4-byte tags, 32-byte constructor values (ids), and
+/// the lengths it requires, zero-filled. Covers "tag + id + fields" readings.
+fn message_candidates(bytecode: &[u8], dispatch_tags: &[Vec<u8>], v32s: &[Vec<u8>], ints: &[i64]) -> Vec<Vec<u8>> {
+    let toks = script::tokenize(bytecode);
+    let mut tags: Vec<Vec<u8>> = Vec::new();
+    for t in &toks {
+        if let Token::Push(b) = t {
+            if b.len() == 4 && !dispatch_tags.contains(b) && !tags.contains(b) {
+                tags.push(b.clone());
+            }
+        }
+    }
+    tags.truncate(6);
+    let mut lengths: Vec<usize> =
+        script::pushed_ints(bytecode).into_iter().filter(|n| (4..=512).contains(n)).map(|n| n as usize).collect();
+    lengths.truncate(8);
+    let mut ids: Vec<Vec<u8>> = v32s.iter().take(4).cloned().collect();
+    ids.push(vec![]);
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    let mut add = |m: Vec<u8>| {
+        if !m.is_empty() && !out.contains(&m) {
+            out.push(m);
+        }
+    };
+    let tag_opts: Vec<Vec<u8>> = if tags.is_empty() { vec![vec![]] } else { tags };
+    for tag in &tag_opts {
+        for id in &ids {
+            let mut base = tag.clone();
+            base.extend_from_slice(id);
+            for l in &lengths {
+                if *l > base.len() {
+                    let mut m = base.clone();
+                    m.resize(*l, 0);
+                    add(m);
+                    // A trailing 8-byte field may have to equal a constructor value.
+                    if *l == base.len() + 8 {
+                        for n in ints.iter().take(4) {
+                            let mut m = base.clone();
+                            m.extend_from_slice(&n.to_le_bytes());
+                            add(m);
+                        }
+                    }
+                }
+            }
+            add(base);
+        }
+    }
+    out.truncate(40);
+    out
 }
 
 #[cfg(test)]
@@ -407,17 +507,11 @@ mod tests {
 
     #[test]
     fn types() {
-        assert_eq!(
-            parse_type("byte[32]").unwrap(),
-            TypeArtifact::FixedBytes { len: 32 }
-        );
+        assert_eq!(parse_type("byte[32]").unwrap(), TypeArtifact::FixedBytes { len: 32 });
         assert_eq!(parse_type("byte[]").unwrap(), TypeArtifact::Bytes);
         assert_eq!(
             parse_type("pubkey[3]").unwrap(),
-            TypeArtifact::FixedArray {
-                item: Box::new(TypeArtifact::Pubkey),
-                len: 3
-            }
+            TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Pubkey), len: 3 }
         );
     }
 }

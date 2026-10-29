@@ -9,6 +9,7 @@
 
 pub mod fee;
 pub mod inputs;
+pub mod oracle;
 pub mod outputs;
 pub mod secrets;
 pub mod sig;
@@ -20,17 +21,11 @@ use crate::wallets::KeyRef;
 pub(crate) fn pay_all_to_attacker(plan: &SpendPlan) -> SpendPlan {
     let mut p = plan.clone();
     let fee = p.input_total().saturating_sub(p.output_total()).max(1);
-    p.outputs = vec![OutputSpec {
-        value: p.input_total() - fee,
-        to: Dest::Key(KeyRef::Attacker),
-    }];
+    p.outputs = vec![OutputSpec::new(p.input_total() - fee, Dest::Key(KeyRef::Attacker))];
     p
 }
 
-pub(crate) fn map_covenant_args(
-    plan: &SpendPlan,
-    f: impl Fn(&ArgRecipe) -> ArgRecipe,
-) -> SpendPlan {
+pub(crate) fn map_covenant_args(plan: &SpendPlan, f: impl Fn(&ArgRecipe) -> ArgRecipe) -> SpendPlan {
     let mut p = plan.clone();
     for i in p.inputs.iter_mut() {
         if let InputSpec::Covenant { args, .. } = i {

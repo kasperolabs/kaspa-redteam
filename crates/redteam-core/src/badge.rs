@@ -52,11 +52,7 @@ pub fn summary(r: &RunReport, date_utc: &str) -> BadgeSummary {
 /// Flat two-part badge, shields.io proportions, no external fonts.
 pub fn svg(r: &RunReport) -> String {
     let left = "kaspa-redteam";
-    let right = format!(
-        "survived {} attacks · v{}",
-        r.count_survived(),
-        r.library_version
-    );
+    let right = format!("survived {} attacks · v{}", r.count_survived(), r.library_version);
     // ~6.5px per char at 11px Verdana-ish metrics
     let lw = (left.len() as f64 * 6.6 + 14.0).round() as u32;
     let rw = (right.chars().count() as f64 * 6.3 + 14.0).round() as u32;

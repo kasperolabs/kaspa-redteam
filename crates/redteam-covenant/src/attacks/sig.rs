@@ -34,7 +34,7 @@ impl CovenantAttack for Sig01 {
     }
     fn attempts(&self, cx: &AttackCx) -> Result<Vec<Attempt>, String> {
         let mut out = Vec::new();
-        for (p, b) in cx.live_paths().filter(|(_, b)| !b.signers.is_empty()) {
+        for (p, b) in cx.live_paths().filter(|(_, b)| b.plan.has_sig_recipe()) {
             let unsigned = map_covenant_args(&b.plan, |a| match a {
                 ArgRecipe::Sig(_) => ArgRecipe::RawSig(garbage_sig()),
                 other => other.clone(),
@@ -82,7 +82,7 @@ impl CovenantAttack for Sig02 {
     fn attempts(&self, cx: &AttackCx) -> Result<Vec<Attempt>, String> {
         let attacker_pk = cx.contract.wallets.attacker.xonly().to_vec();
         let mut out = Vec::new();
-        for (p, b) in cx.live_paths().filter(|(_, b)| !b.signers.is_empty()) {
+        for (p, b) in cx.live_paths().filter(|(_, b)| b.plan.has_sig_recipe()) {
             // a) attacker signature, everything else as the honest spend
             let wrong_key = map_covenant_args(&b.plan, |a| match a {
                 ArgRecipe::Sig(_) => ArgRecipe::Sig(KeyRef::Attacker),
@@ -99,9 +99,7 @@ impl CovenantAttack for Sig02 {
             // b) attacker signature AND attacker pubkey in every pubkey argument
             let c = cx.contract;
             let swapped = map_covenant_args(&wrong_key, |a| match a {
-                ArgRecipe::Value(ArtifactValue::Bytes(bytes))
-                    if bytes.len() == 32 && c.key_of(bytes).is_some() =>
-                {
+                ArgRecipe::Value(ArtifactValue::Bytes(bytes)) if bytes.len() == 32 && c.key_of(bytes).is_some() => {
                     ArgRecipe::Value(ArtifactValue::Bytes(attacker_pk.clone()))
                 }
                 other => other.clone(),

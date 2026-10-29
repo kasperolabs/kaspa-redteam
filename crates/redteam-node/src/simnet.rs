@@ -21,9 +21,7 @@ impl Key {
         use sha2::{Digest, Sha256};
         let h = Sha256::digest(format!("kaspa-redteam/node-wallet/{label}").as_bytes());
         let sk = SecretKey::from_slice(&h).expect("valid key");
-        Self {
-            keypair: Keypair::from_secret_key(SECP256K1, &sk),
-        }
+        Self { keypair: Keypair::from_secret_key(SECP256K1, &sk) }
     }
     pub fn xonly(&self) -> [u8; 32] {
         self.keypair.x_only_public_key().0.serialize()
@@ -57,16 +55,12 @@ pub struct SimNet {
 }
 
 fn free_port() -> Result<u16> {
-    Ok(std::net::TcpListener::bind("127.0.0.1:0")?
-        .local_addr()?
-        .port())
+    Ok(std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
 }
 
 impl SimNet {
     pub fn start(kaspad: &PathBuf, count: usize, keep_data: bool) -> Result<Self> {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?;
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
         let mut nodes: Vec<Node> = Vec::new();
         let base = std::env::temp_dir().join(format!("kaspa-redteam-{}", std::process::id()));
         for i in 0..count.max(1) {
@@ -94,18 +88,10 @@ impl SimNet {
             if let Some(first) = nodes.first() {
                 cmd.arg(format!("--connect={}", first.p2p_addr));
             }
-            let child = cmd
-                .spawn()
-                .with_context(|| format!("start {} (pass --kaspad PATH)", kaspad.display()))?;
+            let child = cmd.spawn().with_context(|| format!("start {} (pass --kaspad PATH)", kaspad.display()))?;
             let url = format!("ws://127.0.0.1:{rpc_port}");
             let rpc = KaspaRpcClient::new(WrpcEncoding::Borsh, Some(&url), None, None, None)?;
-            let mut node = Node {
-                rpc,
-                rpc_url: url,
-                p2p_addr: format!("127.0.0.1:{p2p_port}"),
-                child,
-                dir,
-            };
+            let mut node = Node { rpc, rpc_url: url, p2p_addr: format!("127.0.0.1:{p2p_port}"), child, dir };
             rt.block_on(connect(&node.rpc, &mut node.child))?;
             nodes.push(node);
         }
@@ -113,13 +99,7 @@ impl SimNet {
         for n in &nodes {
             network = rt.block_on(guard::refuse_mainnet(&n.rpc))?;
         }
-        Ok(Self {
-            rt,
-            nodes,
-            network,
-            miner: Key::derive("miner"),
-            keep_data,
-        })
+        Ok(Self { rt, nodes, network, miner: Key::derive("miner"), keep_data })
     }
 
     pub fn block_on<F: std::future::Future>(&self, f: F) -> F::Output {
@@ -144,9 +124,7 @@ impl SimNet {
     }
 
     pub fn virtual_daa(&self) -> Result<u64> {
-        Ok(self
-            .block_on(self.rpc(0).get_block_dag_info())?
-            .virtual_daa_score)
+        Ok(self.block_on(self.rpc(0).get_block_dag_info())?.virtual_daa_score)
     }
 }
 

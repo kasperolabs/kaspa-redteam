@@ -18,11 +18,7 @@ fn load(path: &PathBuf) -> Contract {
 #[test]
 fn every_attack_has_fixtures_and_they_behave() {
     let attacks = registry();
-    assert!(
-        attacks.len() >= 8,
-        "registry has only {} attacks",
-        attacks.len()
-    );
+    assert!(attacks.len() >= 8, "registry has only {} attacks", attacks.len());
     let mut failures = Vec::new();
     for attack in attacks {
         let id = attack.meta().id;
@@ -34,35 +30,20 @@ fn every_attack_has_fixtures_and_they_behave() {
             continue;
         }
 
-        let r = run(&load(&vuln), &[]);
-        let caught: Vec<_> = r
-            .findings()
-            .map(|f| format!("{}@{}", f.id, f.subject))
-            .collect();
+        let r = run(&load(&vuln), &[], vec![]);
+        let caught: Vec<_> = r.findings().map(|f| format!("{}@{}", f.id, f.subject)).collect();
         if !r.findings().any(|f| f.id == id) {
-            failures.push(format!(
-                "{id}: vulnerable fixture NOT caught (findings: {caught:?}; notes: {:?})",
-                r.notes
-            ));
+            failures.push(format!("{id}: vulnerable fixture NOT caught (findings: {caught:?}; notes: {:?})", r.notes));
         }
 
-        let r = run(&load(&fixed), &[]);
-        let noise: Vec<_> = r
-            .findings()
-            .map(|f| format!("{}@{}", f.id, f.subject))
-            .collect();
+        let r = run(&load(&fixed), &[], vec![]);
+        let noise: Vec<_> = r.findings().map(|f| format!("{}@{}", f.id, f.subject)).collect();
         if !noise.is_empty() {
             failures.push(format!("{id}: fixed fixture raised {noise:?}"));
         }
-        let unexplored: Vec<_> = r
-            .notes
-            .iter()
-            .filter(|n| n.contains("unexplored"))
-            .collect();
+        let unexplored: Vec<_> = r.notes.iter().filter(|n| n.contains("unexplored")).collect();
         if !unexplored.is_empty() {
-            failures.push(format!(
-                "{id}: fixed fixture has unexplored paths {unexplored:?}"
-            ));
+            failures.push(format!("{id}: fixed fixture has unexplored paths {unexplored:?}"));
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));

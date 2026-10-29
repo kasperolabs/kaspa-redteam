@@ -24,3 +24,4 @@ faster-hex.workspace = true
 inventory.workspace = true
 anyhow.workspace = true
 borsh.workspace = true
+rayon.workspace = true

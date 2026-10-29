@@ -19,10 +19,7 @@ pub fn repro_json(contract: &Contract, a: &Attempt, b: &Built, fee: u64) -> serd
         .map(|o| {
             serde_json::json!({
                 "value_sompi": o.value,
-                "to": match &o.to {
-                    crate::sandbox::Dest::Key(k) => contract.wallets.label(*k),
-                    crate::sandbox::Dest::SelfCovenant => "covenant (self)".into(),
-                },
+                "to": crate::dest_label(contract, &o.to),
             })
         })
         .collect();
@@ -54,41 +51,22 @@ pub struct ReplayResult {
 pub fn replay_file(path: &std::path::Path) -> Result<ReplayResult> {
     let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let v: serde_json::Value = serde_json::from_str(&raw)?;
-    let repro = v
-        .get("repro")
-        .ok_or_else(|| anyhow!("no `repro` in finding file"))?;
+    let repro = v.get("repro").ok_or_else(|| anyhow!("no `repro` in finding file"))?;
     let hex = |k: &str| -> Result<Vec<u8>> {
-        let s = repro
-            .get(k)
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| anyhow!("missing {k}"))?;
+        let s = repro.get(k).and_then(|x| x.as_str()).ok_or_else(|| anyhow!("missing {k}"))?;
         let mut out = vec![0u8; s.len() / 2];
         faster_hex::hex_decode(s.as_bytes(), &mut out).map_err(|_| anyhow!("{k}: bad hex"))?;
         Ok(out)
     };
     let tx: Transaction = borsh::from_slice(&hex("tx_borsh_hex")?).context("decode tx")?;
-    let entries: Vec<UtxoEntry> =
-        borsh::from_slice(&hex("utxo_entries_borsh_hex")?).context("decode entries")?;
-    let num = |k: &str| {
-        repro
-            .get(k)
-            .and_then(|x| x.as_u64())
-            .ok_or_else(|| anyhow!("missing {k}"))
-    };
+    let entries: Vec<UtxoEntry> = borsh::from_slice(&hex("utxo_entries_borsh_hex")?).context("decode entries")?;
+    let num = |k: &str| repro.get(k).and_then(|x| x.as_u64()).ok_or_else(|| anyhow!("missing {k}"));
     let judge = Judge::new();
     let tx_id = tx.id().to_string();
-    let verdict = judge.verify(
-        &Built { tx, entries },
-        num("pov_daa_score")?,
-        num("past_median_time_ms")?,
-    );
+    let verdict = judge.verify(&Built { tx, entries }, num("pov_daa_score")?, num("past_median_time_ms")?);
     Ok(ReplayResult {
         id: v.get("id").and_then(|x| x.as_str()).unwrap_or("?").into(),
-        path: v
-            .get("spend_path")
-            .and_then(|x| x.as_str())
-            .unwrap_or("?")
-            .into(),
+        path: v.get("spend_path").and_then(|x| x.as_str()).unwrap_or("?").into(),
         tx_id,
         verdict,
     })

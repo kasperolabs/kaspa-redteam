@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 /// Version of the attack library. Bumped whenever attacks are added or changed,
 /// so old badges visibly age.
-pub const LIBRARY_VERSION: &str = "0.1.0";
+pub const LIBRARY_VERSION: &str = "0.2.0";
 pub const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What kind of thing an attack targets. New engines add a variant here.
@@ -100,10 +100,7 @@ pub enum Outcome {
     /// Every hostile attempt was rejected.
     Survived { attempts: usize },
     /// At least one hostile attempt was accepted.
-    Found {
-        attempts: usize,
-        findings: Vec<Finding>,
-    },
+    Found { attempts: usize, findings: Vec<Finding> },
     /// The attack does not apply to this target, or the engine could not
     /// reach the state it needs. Not a pass and not a failure.
     Skipped { reason: String },
@@ -145,22 +142,13 @@ impl RunReport {
         })
     }
     pub fn count_run(&self) -> usize {
-        self.results
-            .iter()
-            .filter(|r| !matches!(r.outcome, Outcome::Skipped { .. }))
-            .count()
+        self.results.iter().filter(|r| !matches!(r.outcome, Outcome::Skipped { .. })).count()
     }
     pub fn count_survived(&self) -> usize {
-        self.results
-            .iter()
-            .filter(|r| matches!(r.outcome, Outcome::Survived { .. }))
-            .count()
+        self.results.iter().filter(|r| matches!(r.outcome, Outcome::Survived { .. })).count()
     }
     pub fn count_skipped(&self) -> usize {
-        self.results
-            .iter()
-            .filter(|r| matches!(r.outcome, Outcome::Skipped { .. }))
-            .count()
+        self.results.iter().filter(|r| matches!(r.outcome, Outcome::Skipped { .. })).count()
     }
     pub fn is_clean(&self) -> bool {
         self.findings().next().is_none()
@@ -169,10 +157,7 @@ impl RunReport {
 
 /// `--only` filter: matches pack names and attack IDs, case-insensitive.
 pub fn selected(meta: &AttackMeta, only: &[String]) -> bool {
-    only.is_empty()
-        || only
-            .iter()
-            .any(|o| o.eq_ignore_ascii_case(meta.pack) || o.eq_ignore_ascii_case(meta.id))
+    only.is_empty() || only.iter().any(|o| o.eq_ignore_ascii_case(meta.pack) || o.eq_ignore_ascii_case(meta.id))
 }
 
 pub fn sha256_hex(parts: &[&[u8]]) -> String {

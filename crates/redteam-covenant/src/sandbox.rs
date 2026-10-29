@@ -16,32 +16,58 @@ use kaspa_consensus::processes::transaction_validator::{
 };
 use kaspa_consensus_core::config::params::{MAINNET_PARAMS, Params};
 use kaspa_consensus_core::constants::LOCK_TIME_THRESHOLD;
-use kaspa_consensus_core::hashing::sighash::{
-    SigHashReusedValuesUnsync, calc_schnorr_signature_hash,
-};
+use kaspa_consensus_core::hashing::sighash::{SigHashReusedValuesUnsync, calc_schnorr_signature_hash};
 use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
 use kaspa_consensus_core::mass::MassCalculator;
 use kaspa_consensus_core::subnets::SubnetworkId;
 use kaspa_consensus_core::tx::{
-    PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput,
-    TransactionOutpoint, TransactionOutput, UtxoEntry,
+    ComputeCommit, CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId,
+    TransactionInput, TransactionOutpoint, TransactionOutput, UtxoEntry,
 };
 use kaspa_txscript::pay_to_script_hash_script;
 use kaspa_txscript::script_builder::ScriptBuilder;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use silverscript_abi::ArtifactValue;
+use std::collections::BTreeMap;
 
 pub const SOMPI_PER_KAS: u64 = 100_000_000;
 /// Value of each covenant coin the sandbox deploys.
 pub const COVENANT_VALUE: u64 = 10 * SOMPI_PER_KAS;
+/// Value of each stand-in coin (another covenant's address) the sandbox deploys.
+pub const STAND_IN_VALUE: u64 = SOMPI_PER_KAS;
 /// Default fee an honest spend leaves (consensus itself requires none).
 pub const BASE_FEE: u64 = 10_000;
 /// DAA score at which sandbox coins were created.
 pub const UTXO_DAA: u64 = 1_000;
 
+/// Runtime state of a stateful covenant: field name to value.
+pub type StateValues = BTreeMap<String, ArtifactValue>;
+
+/// How a data signature's message is hashed before signing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MsgHash {
+    Blake2b,
+    Sha256,
+}
+
+impl MsgHash {
+    pub fn digest(&self, msg: &[u8]) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        match self {
+            MsgHash::Blake2b => out.copy_from_slice(blake2b_simd::Params::new().hash_length(32).hash(msg).as_bytes()),
+            MsgHash::Sha256 => {
+                use sha2::{Digest, Sha256};
+                out.copy_from_slice(&Sha256::digest(msg));
+            }
+        }
+        out
+    }
+}
+
 /// One argument of a covenant entry call. Signatures are recipes, not bytes,
-/// because they can only be made once the transaction is final.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// because they can only be made once the transaction (or the message) is known.
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", content = "v", rename_all = "snake_case")]
 pub enum ArgRecipe {
     Value(ArtifactValue),
@@ -49,51 +75,118 @@ pub enum ArgRecipe {
     Sig(KeyRef),
     /// Literal signature bytes (garbage, replayed, truncated).
     RawSig(Vec<u8>),
+    /// BIP340 data signature by `key` over hash(the bytes of argument `arg`):
+    /// a signed reading, as `checkMsgSig` verifies it.
+    DataSigOf {
+        key: KeyRef,
+        arg: usize,
+        hash: MsgHash,
+    },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// An input copied verbatim from an imported baseline.
+#[derive(Debug, Clone, Serialize)]
+pub struct RawInput {
+    /// None = give it a fresh sandbox outpoint (used when an attack duplicates it).
+    pub outpoint: Option<TransactionOutpoint>,
+    #[serde(serialize_with = "hex_ser")]
+    pub signature_script: Vec<u8>,
+    pub sequence: u64,
+    pub sig_op_count: u8,
+    pub compute_budget: u16,
+    pub entry: UtxoEntry,
+    /// Part of the covenant under test (attacks may duplicate or move it).
+    pub target: bool,
+    /// Its signature script carries what looks like a transaction signature.
+    pub signed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InputSpec {
-    /// A coin locked by the covenant, spent through `entry`.
+    /// A coin locked by the covenant (in `state`, or its initial state), spent through `entry`.
     Covenant {
         entry: String,
         args: Vec<ArgRecipe>,
         value: u64,
         sequence: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        state: Option<StateValues>,
     },
     /// A plain pay-to-pubkey coin owned by `owner`.
     P2pk { owner: KeyRef, value: u64 },
+    /// A coin at a stand-in address the covenant names (another covenant's
+    /// P2SH hash). Spendable by anyone; it only has to be there.
+    StandIn { target: usize, value: u64 },
+    /// Imported from a baseline file.
+    Raw(RawInput),
 }
 
 impl InputSpec {
     pub fn value(&self) -> u64 {
         match self {
-            InputSpec::Covenant { value, .. } | InputSpec::P2pk { value, .. } => *value,
+            InputSpec::Covenant { value, .. } | InputSpec::P2pk { value, .. } | InputSpec::StandIn { value, .. } => {
+                *value
+            }
+            InputSpec::Raw(r) => r.entry.amount,
         }
+    }
+    /// Is this input the covenant under test?
+    pub fn is_target(&self) -> bool {
+        match self {
+            InputSpec::Covenant { .. } => true,
+            InputSpec::Raw(r) => r.target,
+            _ => false,
+        }
+    }
+    /// A copy that can sit in the same transaction (fresh outpoint).
+    pub fn duplicate(&self) -> InputSpec {
+        let mut d = self.clone();
+        if let InputSpec::Raw(r) = &mut d {
+            r.outpoint = None;
+        }
+        d
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct OutputSpec {
     pub value: u64,
     pub to: Dest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub covenant: Option<CovenantBinding>,
+}
+
+impl OutputSpec {
+    pub fn new(value: u64, to: Dest) -> Self {
+        Self { value, to, covenant: None }
+    }
 }
 
 /// Where an output goes, symbolically, so attacks can say "pay the attacker"
 /// and reports can say who got paid.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", content = "v", rename_all = "snake_case")]
 pub enum Dest {
     Key(KeyRef),
-    /// Back to the covenant's own address.
+    /// Back to the covenant's own address, same state as the first covenant input.
     SelfCovenant,
+    /// The covenant with this runtime state (a stateful continuation).
+    Successor(StateValues),
+    /// A stand-in address the covenant names.
+    StandIn(usize),
+    /// A literal script, from an imported baseline.
+    Raw(#[serde(serialize_with = "spk_ser")] ScriptPublicKey),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SpendPlan {
+    pub version: u16,
     pub inputs: Vec<InputSpec>,
     pub outputs: Vec<OutputSpec>,
     pub lock_time: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty", serialize_with = "hex_ser")]
+    pub payload: Vec<u8>,
     /// DAA score of the point of view (the block that would include the tx).
     pub pov_daa: u64,
     /// Past median time in ms, for time-based lock times.
@@ -101,26 +194,53 @@ pub struct SpendPlan {
 }
 
 impl SpendPlan {
+    pub fn simple(
+        inputs: Vec<InputSpec>,
+        outputs: Vec<OutputSpec>,
+        lock_time: u64,
+        pov_daa: u64,
+        block_time: u64,
+    ) -> Self {
+        Self { version: 0, inputs, outputs, lock_time, payload: vec![], pov_daa, block_time }
+    }
     pub fn input_total(&self) -> u64 {
         self.inputs.iter().map(|i| i.value()).sum()
     }
     pub fn output_total(&self) -> u64 {
         self.outputs.iter().map(|o| o.value).sum()
     }
+    /// Transaction-signature signers the covenant inputs need.
     pub fn signers(&self) -> Vec<KeyRef> {
         let mut v = Vec::new();
         for i in &self.inputs {
-            if let InputSpec::Covenant { args, .. } = i {
-                for a in args {
-                    if let ArgRecipe::Sig(k) = a {
-                        if !v.contains(k) {
-                            v.push(*k);
+            match i {
+                InputSpec::Covenant { args, .. } => {
+                    for a in args {
+                        if let ArgRecipe::Sig(k) = a {
+                            if !v.contains(k) {
+                                v.push(*k);
+                            }
                         }
                     }
                 }
+                InputSpec::Raw(r) if r.target && r.signed && !v.contains(&KeyRef::External) => v.push(KeyRef::External),
+                _ => {}
             }
         }
         v
+    }
+    pub fn has_sig_recipe(&self) -> bool {
+        self.inputs.iter().any(
+            |i| matches!(i, InputSpec::Covenant { args, .. } if args.iter().any(|a| matches!(a, ArgRecipe::Sig(_)))),
+        )
+    }
+    pub fn has_datasig_recipe(&self) -> bool {
+        self.inputs.iter().any(
+            |i| matches!(i, InputSpec::Covenant { args, .. } if args.iter().any(|a| matches!(a, ArgRecipe::DataSigOf { .. }))),
+        )
+    }
+    pub fn first_target(&self) -> Option<usize> {
+        self.inputs.iter().position(|i| i.is_target())
     }
 }
 
@@ -153,6 +273,15 @@ impl Default for Judge {
     }
 }
 
+fn commit_for(version: u16, sig_ops: u8) -> ComputeCommit {
+    if ComputeCommit::version_expects_compute_budget_field(version) {
+        // 10 budget units per signature operation (1000 grams / 100), plus room for the script.
+        ComputeCommit::ComputeBudget((sig_ops as u16).saturating_mul(10).saturating_add(100).into())
+    } else {
+        ComputeCommit::SigopCount(sig_ops.into())
+    }
+}
+
 impl Judge {
     pub fn new() -> Self {
         // Mainnet consensus constants. These are rules, not a connection: the
@@ -171,76 +300,103 @@ impl Judge {
             mass.clone(),
             params.mass_per_sig_op,
         );
-        Self {
-            params,
-            validator,
-            mass,
-        }
+        Self { params, validator, mass }
     }
 
     pub fn params(&self) -> &Params {
         &self.params
     }
 
-    pub fn dest_spk(contract: &Contract, wallets: &Wallets, d: &Dest) -> ScriptPublicKey {
-        match d {
+    /// The script public key a destination resolves to. `first_state` is the
+    /// state of the first covenant input, for `SelfCovenant`.
+    pub fn dest_spk(
+        contract: &Contract,
+        wallets: &Wallets,
+        d: &Dest,
+        first_state: Option<&StateValues>,
+    ) -> Result<ScriptPublicKey> {
+        Ok(match d {
             Dest::Key(k) => wallets.get(*k).p2pk(),
-            Dest::SelfCovenant => pay_to_script_hash_script(&contract.bytecode),
-        }
+            Dest::SelfCovenant => pay_to_script_hash_script(&contract.script_for(first_state)?),
+            Dest::Successor(s) => pay_to_script_hash_script(&contract.script_for(Some(s))?),
+            Dest::StandIn(i) => pay_to_script_hash_script(&contract.stand_ins[*i].redeem),
+            Dest::Raw(spk) => spk.clone(),
+        })
     }
 
     /// Builds and signs the transaction a plan describes.
     pub fn build(&self, contract: &Contract, plan: &SpendPlan) -> Result<Built> {
         let wallets = &contract.wallets;
-        let covenant_spk = pay_to_script_hash_script(&contract.bytecode);
+        let first_state = plan
+            .inputs
+            .iter()
+            .find_map(|i| match i {
+                InputSpec::Covenant { state, .. } => Some(state.as_ref()),
+                _ => None,
+            })
+            .flatten();
         let mut inputs = Vec::with_capacity(plan.inputs.len());
         let mut entries = Vec::with_capacity(plan.inputs.len());
+        let mut redeems: Vec<Option<Vec<u8>>> = Vec::with_capacity(plan.inputs.len());
         for (i, spec) in plan.inputs.iter().enumerate() {
-            let outpoint = TransactionOutpoint::new(fake_txid(i), i as u32);
+            let fresh = TransactionOutpoint::new(fake_txid(i), i as u32);
             match spec {
-                InputSpec::Covenant {
-                    value, sequence, ..
-                } => {
-                    inputs.push(TransactionInput::new(
-                        outpoint,
+                InputSpec::Covenant { value, sequence, state, .. } => {
+                    let script = contract.script_for(state.as_ref())?;
+                    inputs.push(TransactionInput::new_with_mass(
+                        fresh,
                         vec![],
                         *sequence,
-                        contract.sig_ops,
+                        commit_for(plan.version, contract.sig_ops),
                     ));
-                    entries.push(UtxoEntry::new(
-                        *value,
-                        covenant_spk.clone(),
-                        UTXO_DAA,
-                        false,
-                        None,
-                    ));
+                    entries.push(UtxoEntry::new(*value, pay_to_script_hash_script(&script), UTXO_DAA, false, None));
+                    redeems.push(Some(script));
                 }
                 InputSpec::P2pk { owner, value } => {
-                    inputs.push(TransactionInput::new(outpoint, vec![], 0, 1));
-                    entries.push(UtxoEntry::new(
-                        *value,
-                        wallets.get(*owner).p2pk(),
-                        UTXO_DAA,
-                        false,
-                        None,
+                    inputs.push(TransactionInput::new_with_mass(fresh, vec![], 0, commit_for(plan.version, 1)));
+                    entries.push(UtxoEntry::new(*value, wallets.get(*owner).p2pk(), UTXO_DAA, false, None));
+                    redeems.push(None);
+                }
+                InputSpec::StandIn { target, value } => {
+                    let redeem = contract.stand_ins[*target].redeem.clone();
+                    inputs.push(TransactionInput::new_with_mass(fresh, vec![], 0, commit_for(plan.version, 0)));
+                    entries.push(UtxoEntry::new(*value, pay_to_script_hash_script(&redeem), UTXO_DAA, false, None));
+                    redeems.push(Some(redeem));
+                }
+                InputSpec::Raw(r) => {
+                    let commit = if ComputeCommit::version_expects_compute_budget_field(plan.version) {
+                        ComputeCommit::ComputeBudget(r.compute_budget.into())
+                    } else {
+                        ComputeCommit::SigopCount(r.sig_op_count.into())
+                    };
+                    inputs.push(TransactionInput::new_with_mass(
+                        r.outpoint.unwrap_or(fresh),
+                        r.signature_script.clone(),
+                        r.sequence,
+                        commit,
                     ));
+                    entries.push(r.entry.clone());
+                    redeems.push(None);
                 }
             }
         }
-        let outputs: Vec<TransactionOutput> = plan
-            .outputs
-            .iter()
-            .map(|o| TransactionOutput::new(o.value, Self::dest_spk(contract, wallets, &o.to)))
-            .collect();
+        let mut outputs = Vec::with_capacity(plan.outputs.len());
+        for o in &plan.outputs {
+            outputs.push(TransactionOutput::with_covenant(
+                o.value,
+                Self::dest_spk(contract, wallets, &o.to, first_state)?,
+                o.covenant,
+            ));
+        }
 
         let mut tx = Transaction::new(
-            0,
+            plan.version,
             inputs,
             outputs,
             plan.lock_time,
             SubnetworkId::default(),
             0,
-            vec![],
+            plan.payload.clone(),
         );
 
         // Commit the storage mass first: it is part of what gets signed.
@@ -255,46 +411,66 @@ impl Judge {
         // Sign. Kaspa sighashes exclude signature scripts, so each input can be
         // hashed now and its script filled in afterwards.
         let reused = SigHashReusedValuesUnsync::new();
-        let mut scripts = Vec::with_capacity(plan.inputs.len());
+        let mut scripts: Vec<Option<Vec<u8>>> = Vec::with_capacity(plan.inputs.len());
         {
             let populated = PopulatedTransaction::new(&tx, entries.clone());
             for (i, spec) in plan.inputs.iter().enumerate() {
-                let sighash = calc_schnorr_signature_hash(&populated, i, SIG_HASH_ALL, &reused);
-                let msg = secp256k1::Message::from_digest_slice(sighash.as_bytes().as_slice())
-                    .expect("32-byte digest");
-                let sign = |k: KeyRef| -> Vec<u8> {
-                    let sig = wallets.get(k).keypair.sign_schnorr(msg);
-                    let mut v = sig.as_ref().to_vec();
-                    v.push(SIG_HASH_ALL.to_u8());
-                    v
-                };
                 let script = match spec {
-                    InputSpec::Covenant { entry, args, .. } => {
-                        let values: Vec<ArtifactValue> = args
-                            .iter()
-                            .map(|a| match a {
-                                ArgRecipe::Value(v) => v.clone(),
-                                ArgRecipe::Sig(k) => ArtifactValue::Bytes(sign(*k)),
-                                ArgRecipe::RawSig(b) => ArtifactValue::Bytes(b.clone()),
-                            })
-                            .collect();
-                        let mut s = silverscript_abi::encode_contract_entry_sig_script(
-                            &contract.artifact,
-                            &contract.contract_name,
-                            entry,
-                            &values,
-                        )
-                        .map_err(|e| anyhow!("encode `{entry}` args: {e}"))?;
-                        s.extend(push_data(&contract.bytecode)?);
-                        s
+                    InputSpec::Raw(_) => None,
+                    InputSpec::StandIn { .. } => Some(push_data(redeems[i].as_ref().expect("stand-in redeem"))?),
+                    _ => {
+                        let sighash = calc_schnorr_signature_hash(&populated, i, SIG_HASH_ALL, &reused);
+                        let msg = secp256k1::Message::from_digest_slice(sighash.as_bytes().as_slice())
+                            .expect("32-byte digest");
+                        let sign = |k: KeyRef| -> Vec<u8> {
+                            let sig = wallets.get(k).keypair.sign_schnorr(msg);
+                            let mut v = sig.as_ref().to_vec();
+                            v.push(SIG_HASH_ALL.to_u8());
+                            v
+                        };
+                        match spec {
+                            InputSpec::Covenant { entry, args, .. } => {
+                                let artifact =
+                                    contract.artifact.as_ref().ok_or_else(|| anyhow!("no compiled contract"))?;
+                                let mut values: Vec<ArtifactValue> = Vec::with_capacity(args.len());
+                                for a in args {
+                                    values.push(match a {
+                                        ArgRecipe::Value(v) => v.clone(),
+                                        ArgRecipe::Sig(k) => ArtifactValue::Bytes(sign(*k)),
+                                        ArgRecipe::RawSig(b) => ArtifactValue::Bytes(b.clone()),
+                                        ArgRecipe::DataSigOf { key, arg, hash } => {
+                                            let Some(ArgRecipe::Value(ArtifactValue::Bytes(m))) = args.get(*arg) else {
+                                                return Err(anyhow!("data signature points at a non-bytes argument"));
+                                            };
+                                            let digest = secp256k1::Message::from_digest(hash.digest(m));
+                                            ArtifactValue::Bytes(
+                                                wallets.get(*key).keypair.sign_schnorr(digest).as_ref().to_vec(),
+                                            )
+                                        }
+                                    });
+                                }
+                                let mut s = silverscript_abi::encode_contract_entry_sig_script(
+                                    artifact,
+                                    &contract.contract_name,
+                                    entry,
+                                    &values,
+                                )
+                                .map_err(|e| anyhow!("encode `{entry}` args: {e}"))?;
+                                s.extend(push_data(redeems[i].as_ref().expect("covenant redeem"))?);
+                                Some(s)
+                            }
+                            InputSpec::P2pk { owner, .. } => Some(push_data(&sign(*owner))?),
+                            _ => unreachable!(),
+                        }
                     }
-                    InputSpec::P2pk { owner, .. } => push_data(&sign(*owner))?,
                 };
                 scripts.push(script);
             }
         }
         for (input, s) in tx.inputs.iter_mut().zip(scripts) {
-            input.signature_script = s;
+            if let Some(s) = s {
+                input.signature_script = s;
+            }
         }
         tx.finalize();
         Ok(Built { tx, entries })
@@ -333,29 +509,18 @@ impl Judge {
 }
 
 /// Mirrors rusty-kaspa `check_tx_is_finalized`.
-pub fn check_finalized(
-    tx: &Transaction,
-    pov_daa: u64,
-    block_time: u64,
-) -> std::result::Result<(), String> {
+pub fn check_finalized(tx: &Transaction, pov_daa: u64, block_time: u64) -> std::result::Result<(), String> {
     if tx.lock_time == 0 {
         return Ok(());
     }
-    let ctx = if tx.lock_time < LOCK_TIME_THRESHOLD {
-        pov_daa
-    } else {
-        block_time
-    };
+    let ctx = if tx.lock_time < LOCK_TIME_THRESHOLD { pov_daa } else { block_time };
     if tx.lock_time < ctx {
         return Ok(());
     }
     if tx.inputs.iter().all(|i| i.sequence == u64::MAX) {
         return Ok(());
     }
-    Err(format!(
-        "transaction not finalized: lock time {} not reached (context {ctx})",
-        tx.lock_time
-    ))
+    Err(format!("transaction not finalized: lock time {} not reached (context {ctx})", tx.lock_time))
 }
 
 pub fn push_data(data: &[u8]) -> Result<Vec<u8>> {
@@ -368,4 +533,12 @@ fn fake_txid(i: usize) -> TransactionId {
     use sha2::{Digest, Sha256};
     let h = Sha256::digest(format!("kaspa-redteam/utxo/{i}").as_bytes());
     TransactionId::from_slice(&h)
+}
+
+fn hex_ser<S: serde::Serializer>(v: &[u8], s: S) -> std::result::Result<S::Ok, S::Error> {
+    s.serialize_str(&faster_hex::hex_string(v))
+}
+
+fn spk_ser<S: serde::Serializer>(v: &ScriptPublicKey, s: S) -> std::result::Result<S::Ok, S::Error> {
+    s.serialize_str(&format!("{:04x}{}", v.version(), faster_hex::hex_string(v.script())))
 }

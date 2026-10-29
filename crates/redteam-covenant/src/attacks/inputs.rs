@@ -2,7 +2,7 @@
 
 use super::kas;
 use crate::runner::{AttackCx, Attempt, CovenantAttack, CovenantPlugin};
-use crate::sandbox::{Dest, OutputSpec};
+use crate::sandbox::{Dest, InputSpec, OutputSpec, SOMPI_PER_KAS};
 use crate::wallets::KeyRef;
 use redteam_core::{AttackMeta, Severity, Target};
 
@@ -27,15 +27,13 @@ impl CovenantAttack for In01 {
     fn attempts(&self, cx: &AttackCx) -> Result<Vec<Attempt>, String> {
         let mut out = Vec::new();
         for (p, b) in cx.live_paths().filter(|(_, b)| b.permissionless()) {
-            let second = b.plan.inputs[0].clone();
+            let Some(t) = b.plan.first_target() else { continue };
+            let second = b.plan.inputs[t].duplicate();
             let extra = second.value();
             // a) the second coin to the attacker in an extra output
             let mut plan = b.plan.clone();
             plan.inputs.push(second.clone());
-            plan.outputs.push(OutputSpec {
-                value: extra,
-                to: Dest::Key(KeyRef::Attacker),
-            });
+            plan.outputs.push(OutputSpec::new(extra, Dest::Key(KeyRef::Attacker)));
             out.push(Attempt {
                 path: p.entry.clone(),
                 label: "second covenant coin added, its value to attacker".into(),
@@ -66,3 +64,61 @@ impl CovenantAttack for In01 {
     }
 }
 inventory::submit! { CovenantPlugin(&In01) }
+
+pub struct In02;
+static IN02: AttackMeta = AttackMeta {
+    id: "IN-02",
+    pack: "inputs",
+    target: Target::Covenant,
+    title: "Attacker's coin at input 0, covenant moved behind it",
+    catches: "values read from a fixed input index instead of this.activeInputIndex",
+    severity: Severity::High,
+    fix_pattern: "int current = tx.inputs[this.activeInputIndex].value;  // never tx.inputs[0] unless input 0 is pinned",
+};
+
+impl CovenantAttack for In02 {
+    fn meta(&self) -> &'static AttackMeta {
+        &IN02
+    }
+    fn order(&self) -> u32 {
+        41
+    }
+    fn attempts(&self, cx: &AttackCx) -> Result<Vec<Attempt>, String> {
+        let mut out = Vec::new();
+        for (p, b) in cx.live_paths().filter(|(_, b)| b.permissionless()) {
+            let Some(t) = b.plan.first_target() else { continue };
+            let cov_value = b.plan.inputs[t].value();
+            let bait = SOMPI_PER_KAS / 2;
+            if cov_value <= bait {
+                continue;
+            }
+            let fee = b.plan.input_total().saturating_sub(b.plan.output_total());
+            let mut plan = b.plan.clone();
+            plan.inputs.insert(0, InputSpec::P2pk { owner: KeyRef::Attacker, value: bait });
+            // Every honest output shrinks as if the covenant only held `bait`.
+            for o in plan.outputs.iter_mut() {
+                o.value = (o.value as u128 * bait as u128 / cov_value as u128) as u64;
+            }
+            let taken = plan.input_total().saturating_sub(plan.output_total()).saturating_sub(fee);
+            if taken == 0 {
+                continue;
+            }
+            plan.outputs.push(OutputSpec::new(taken, Dest::Key(KeyRef::Attacker)));
+            out.push(Attempt {
+                path: p.entry.clone(),
+                label: "attacker coin at input 0, outputs sized to it, rest to attacker".into(),
+                plan,
+                explanation: format!(
+                    "the attacker put a {} coin of their own at input 0. The covenant measured its outputs against that coin instead of itself, so it paid out as if it held {} and the attacker took {}.",
+                    kas(bait),
+                    kas(bait),
+                    kas(taken)
+                ),
+                severity: None,
+                takeover: false,
+            });
+        }
+        Ok(out)
+    }
+}
+inventory::submit! { CovenantPlugin(&In02) }

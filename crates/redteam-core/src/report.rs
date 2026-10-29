@@ -10,11 +10,7 @@ pub struct TermStyle {
 
 impl TermStyle {
     fn paint(&self, code: &str, s: &str) -> String {
-        if self.color {
-            format!("\x1b[{code}m{s}\x1b[0m")
-        } else {
-            s.to_string()
-        }
+        if self.color { format!("\x1b[{code}m{s}\x1b[0m") } else { s.to_string() }
     }
     fn red(&self, s: &str) -> String {
         self.paint("1;31", s)
@@ -42,20 +38,12 @@ pub fn render_terminal(r: &RunReport, style: &TermStyle, verbose: bool) -> Strin
         "{}  {}  {}",
         style.bold(&format!("kaspa-redteam v{}", r.tool_version)),
         r.subject_name,
-        style.dim(&format!(
-            "(library v{}, {} target)",
-            r.library_version,
-            r.target.as_str()
-        ))
+        style.dim(&format!("(library v{}, {} target)", r.library_version, r.target.as_str()))
     );
     let verdict = if findings.is_empty() {
         style.green("0 FINDINGS")
     } else {
-        style.red(&format!(
-            "{} FINDING{}",
-            findings.len(),
-            if findings.len() == 1 { "" } else { "S" }
-        ))
+        style.red(&format!("{} FINDING{}", findings.len(), if findings.len() == 1 { "" } else { "S" }))
     };
     let _ = writeln!(
         o,
@@ -73,25 +61,14 @@ pub fn render_terminal(r: &RunReport, style: &TermStyle, verbose: bool) -> Strin
             let (tag, detail) = match &a.outcome {
                 Outcome::Survived { attempts } => (
                     style.green("survived"),
-                    format!(
-                        "{attempts} attempt{} rejected",
-                        if *attempts == 1 { "" } else { "s" }
-                    ),
+                    format!("{attempts} attempt{} rejected", if *attempts == 1 { "" } else { "s" }),
                 ),
-                Outcome::Found { attempts, findings } => (
-                    style.red("FOUND   "),
-                    format!("{} of {attempts} attempts accepted", findings.len()),
-                ),
+                Outcome::Found { attempts, findings } => {
+                    (style.red("FOUND   "), format!("{} of {attempts} attempts accepted", findings.len()))
+                }
                 Outcome::Skipped { reason } => (style.yellow("skipped "), reason.clone()),
             };
-            let _ = writeln!(
-                o,
-                "  {:<7} {}  {:<48} {}",
-                a.id,
-                tag,
-                a.title,
-                style.dim(&detail)
-            );
+            let _ = writeln!(o, "  {:<7} {}  {:<48} {}", a.id, tag, a.title, style.dim(&detail));
         }
     }
 
@@ -112,11 +89,7 @@ pub fn render_terminal(r: &RunReport, style: &TermStyle, verbose: bool) -> Strin
 
     if verbose {
         if let Some(map) = r.context.get("spend_map").and_then(|m| m.as_array()) {
-            let _ = writeln!(
-                o,
-                "\n{}",
-                style.bold("Spend map (who can spend each path, as found by search)")
-            );
+            let _ = writeln!(o, "\n{}", style.bold("Spend map (who can spend each path, as found by search)"));
             for p in map {
                 let _ = writeln!(
                     o,
@@ -151,11 +124,7 @@ pub fn write_findings(r: &mut RunReport, dir: &Path) -> std::io::Result<Vec<Stri
                 std::fs::create_dir_all(dir)?;
                 let n = seen.entry(f.id.clone()).or_insert(0);
                 *n += 1;
-                let name = if *n == 1 {
-                    format!("{}.json", f.id)
-                } else {
-                    format!("{}-{}.json", f.id, n)
-                };
+                let name = if *n == 1 { format!("{}.json", f.id) } else { format!("{}-{}.json", f.id, n) };
                 let path = dir.join(&name);
                 let display = path.display().to_string();
                 if let Some(obj) = f.repro.as_object_mut() {

@@ -1,0 +1,9 @@
+// IN-02 vulnerable: the payout is measured against input 0, whoever owns it.
+pragma silverscript ^0.1.0;
+
+contract Payout(pubkey payee, int maxFee) {
+    entry pay() {
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(payee)));
+        require(tx.outputs[0].value >= tx.inputs[0].value - maxFee);
+    }
+}

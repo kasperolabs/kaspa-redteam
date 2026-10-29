@@ -2729,7 +2729,7 @@ dependencies = [
 
 [[package]]
 name = "kaspa-redteam"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3972,7 +3972,7 @@ dependencies = [
 
 [[package]]
 name = "redteam-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "faster-hex 0.10.1",
  "serde",
@@ -3982,7 +3982,7 @@ dependencies = [
 
 [[package]]
 name = "redteam-covenant"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake2b_simd",
@@ -3994,6 +3994,7 @@ dependencies = [
  "kaspa-hashes",
  "kaspa-txscript",
  "kaspa-txscript-errors",
+ "rayon",
  "redteam-core",
  "secp256k1",
  "serde",
@@ -4005,7 +4006,7 @@ dependencies = [
 
 [[package]]
 name = "redteam-node"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "inventory",

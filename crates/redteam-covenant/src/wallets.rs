@@ -12,6 +12,8 @@ use secp256k1::{Keypair, SECP256K1, SecretKey};
 pub enum KeyRef {
     Party(usize),
     Attacker,
+    /// A key from an imported baseline the tool does not hold. Never signs.
+    External,
 }
 
 #[derive(Clone)]
@@ -30,10 +32,7 @@ impl Wallet {
             h.update(label.as_bytes());
             h.update(counter.to_le_bytes());
             if let Ok(sk) = SecretKey::from_slice(&h.finalize()) {
-                return Self {
-                    label: label.to_string(),
-                    keypair: Keypair::from_secret_key(SECP256K1, &sk),
-                };
+                return Self { label: label.to_string(), keypair: Keypair::from_secret_key(SECP256K1, &sk) };
             }
             counter += 1;
         }
@@ -62,10 +61,7 @@ pub struct Wallets {
 
 impl Wallets {
     pub fn new() -> Self {
-        Self {
-            parties: Vec::new(),
-            attacker: Wallet::derive("attacker"),
-        }
+        Self { parties: Vec::new(), attacker: Wallet::derive("attacker") }
     }
 
     /// Returns the index of the party with this label, creating it if needed.
@@ -80,7 +76,9 @@ impl Wallets {
     pub fn get(&self, k: KeyRef) -> &Wallet {
         match k {
             KeyRef::Party(i) => &self.parties[i],
-            KeyRef::Attacker => &self.attacker,
+            // External keys never sign; resolving one is a logic error upstream,
+            // and the attacker key makes such a signature fail rather than panic.
+            KeyRef::Attacker | KeyRef::External => &self.attacker,
         }
     }
 
@@ -88,6 +86,7 @@ impl Wallets {
         match k {
             KeyRef::Party(i) => self.parties[i].label.clone(),
             KeyRef::Attacker => "attacker".into(),
+            KeyRef::External => "an outside key".into(),
         }
     }
 
@@ -96,10 +95,7 @@ impl Wallets {
         if spk == &self.attacker.p2pk() {
             return Some(KeyRef::Attacker);
         }
-        self.parties
-            .iter()
-            .position(|w| &w.p2pk() == spk)
-            .map(KeyRef::Party)
+        self.parties.iter().position(|w| &w.p2pk() == spk).map(KeyRef::Party)
     }
 }
 

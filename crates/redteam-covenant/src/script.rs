@@ -30,8 +30,7 @@ pub fn tokenize(script: &[u8]) -> Vec<Token> {
                 n
             }
             0x4e if i + 3 < script.len() => {
-                let n = u32::from_le_bytes([script[i], script[i + 1], script[i + 2], script[i + 3]])
-                    as usize;
+                let n = u32::from_le_bytes([script[i], script[i + 1], script[i + 2], script[i + 3]]) as usize;
                 i += 4;
                 n
             }
@@ -124,11 +123,7 @@ pub fn lock_values(script: &[u8]) -> (Vec<u64>, Vec<u64>) {
             _ => None,
         });
         if let Some(n) = first_push {
-            if *op == 0xb0 {
-                cltv.push(n as u64)
-            } else {
-                csv.push(n as u64)
-            }
+            if *op == 0xb0 { cltv.push(n as u64) } else { csv.push(n as u64) }
         }
     }
     cltv.sort_unstable();
@@ -153,9 +148,7 @@ mod tests {
     #[test]
     fn v1_relative_lock_shape() {
         // <1000> DUP 0 <2^32> WITHIN VERIFY CSV
-        let s = [
-            0x02, 0xe8, 0x03, 0x76, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x01, 0xa5, 0x69, 0xb1,
-        ];
+        let s = [0x02, 0xe8, 0x03, 0x76, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x01, 0xa5, 0x69, 0xb1];
         assert_eq!(lock_values(&s).1, vec![1000]);
     }
 }

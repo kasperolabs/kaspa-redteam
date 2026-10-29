@@ -10,10 +10,7 @@ use redteam_core::{AttackMeta, Outcome, Severity, Target};
 
 fn submit(sim: &SimNet, tx: &kaspa_consensus_core::tx::Transaction) -> Result<(), String> {
     let r = sim
-        .block_on(
-            sim.rpc(0)
-                .submit_transaction(RpcTransaction::from(tx), false),
-        )
+        .block_on(sim.rpc(0).submit_transaction(RpcTransaction::from(tx), false))
         .map(|_| ())
         .map_err(|e| e.to_string());
     crate::debug(&format!("submitTransaction {} -> {r:?}", tx.id()));
@@ -48,10 +45,7 @@ impl NodeAttack for Node01 {
         let tx = p2pk_spend(
             &sim.miner,
             &[(ghost, entry)],
-            vec![TransactionOutput::new(
-                9 * FEE,
-                Key::derive("attacker").p2pk(),
-            )],
+            vec![TransactionOutput::new(9 * FEE, Key::derive("attacker").p2pk())],
         );
         match submit(sim, &tx) {
             Err(_) => Outcome::Survived { attempts: 1 },
@@ -99,16 +93,10 @@ impl NodeAttack for Node02 {
             vec![TransactionOutput::new(value - FEE, sim.miner.p2pk())],
         );
         if let Err(e) = submit(sim, &honest) {
-            return Outcome::Skipped {
-                reason: format!("honest spend refused, cannot set up: {e}"),
-            };
+            return Outcome::Skipped { reason: format!("honest spend refused, cannot set up: {e}") };
         }
         let attacker = Key::derive("attacker");
-        let conflict = p2pk_spend(
-            &sim.miner,
-            &[coin],
-            vec![TransactionOutput::new(value - FEE, attacker.p2pk())],
-        );
+        let conflict = p2pk_spend(&sim.miner, &[coin], vec![TransactionOutput::new(value - FEE, attacker.p2pk())]);
         match submit(sim, &conflict) {
             Err(_) => Outcome::Survived { attempts: 1 },
             Ok(()) => found(
@@ -153,11 +141,7 @@ impl NodeAttack for Node03 {
     fn run(&self, sim: &SimNet, cx: &mut NodeCx) -> Outcome {
         let coin = cx.coins.remove(0);
         let value = coin.1.amount;
-        let tx = p2pk_spend(
-            &sim.miner,
-            &[coin],
-            vec![TransactionOutput::new(value + 1, sim.miner.p2pk())],
-        );
+        let tx = p2pk_spend(&sim.miner, &[coin], vec![TransactionOutput::new(value + 1, sim.miner.p2pk())]);
         match submit(sim, &tx) {
             Err(_) => Outcome::Survived { attempts: 1 },
             Ok(()) => found(
@@ -165,10 +149,7 @@ impl NodeAttack for Node03 {
                 finding(
                     &NODE03,
                     "submitTransaction",
-                    format!(
-                        "a transaction paying {} sompi out of a {value} sompi coin was accepted.",
-                        value + 1
-                    ),
+                    format!("a transaction paying {} sompi out of a {value} sompi coin was accepted.", value + 1),
                     tx_repro(&tx),
                 ),
             ),

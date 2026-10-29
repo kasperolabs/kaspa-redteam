@@ -53,36 +53,23 @@ pub struct NodePlugin(pub &'static dyn NodeAttack);
 inventory::collect!(NodePlugin);
 
 pub fn registry() -> Vec<&'static dyn NodeAttack> {
-    let mut v: Vec<&'static dyn NodeAttack> = inventory::iter::<NodePlugin>
-        .into_iter()
-        .map(|p| p.0)
-        .collect();
+    let mut v: Vec<&'static dyn NodeAttack> = inventory::iter::<NodePlugin>.into_iter().map(|p| p.0).collect();
     v.sort_by(|a, b| a.order().cmp(&b.order()).then(a.meta().id.cmp(b.meta().id)));
     v
 }
 
 pub fn run(opts: &NodeOptions, only: &[String]) -> Result<RunReport> {
     let started = Instant::now();
-    let selected: Vec<_> = registry()
-        .into_iter()
-        .filter(|a| redteam_core::selected(a.meta(), only))
-        .collect();
+    let selected: Vec<_> = registry().into_iter().filter(|a| redteam_core::selected(a.meta(), only)).collect();
     let sim = SimNet::start(&opts.kaspad, opts.nodes, opts.keep_data)?;
-    let mut notes = vec![format!(
-        "{} local kaspad node(s) on {}, data in a temp dir",
-        sim.nodes.len(),
-        sim.network
-    )];
+    let mut notes = vec![format!("{} local kaspad node(s) on {}, data in a temp dir", sim.nodes.len(), sim.network)];
 
     sim.mine(10)?;
     let mut cx = NodeCx { coins: Vec::new() };
     if selected.iter().any(|a| a.needs_coins()) {
         match fund(&sim) {
             Ok(coins) => {
-                notes.push(format!(
-                    "mined to coinbase maturity, {} spendable coins",
-                    coins.len()
-                ));
+                notes.push(format!("mined to coinbase maturity, {} spendable coins", coins.len()));
                 cx.coins = coins;
             }
             Err(e) => notes.push(format!("could not mine spendable coins: {e:#}")),
@@ -93,9 +80,7 @@ pub fn run(opts: &NodeOptions, only: &[String]) -> Result<RunReport> {
     for a in selected {
         let t = Instant::now();
         let outcome = if a.needs_coins() && cx.coins.is_empty() {
-            Outcome::Skipped {
-                reason: "no mature coins".into(),
-            }
+            Outcome::Skipped { reason: "no mature coins".into() }
         } else {
             a.run(&sim, &mut cx)
         };
@@ -109,10 +94,7 @@ pub fn run(opts: &NodeOptions, only: &[String]) -> Result<RunReport> {
             millis: t.elapsed().as_millis(),
         });
     }
-    let version = sim
-        .block_on(sim.rpc(0).get_server_info())
-        .map(|i| i.server_version)
-        .unwrap_or_default();
+    let version = sim.block_on(sim.rpc(0).get_server_info()).map(|i| i.server_version).unwrap_or_default();
     notes.push(format!("kaspad {version}"));
     Ok(RunReport {
         tool_version: redteam_core::TOOL_VERSION.into(),
@@ -138,12 +120,7 @@ fn fund(sim: &SimNet) -> Result<Vec<(TransactionOutpoint, UtxoEntry)>> {
         let mature: Vec<_> = utxos
             .into_iter()
             .filter(|u| !u.utxo_entry.is_coinbase || u.utxo_entry.block_daa_score + maturity < daa)
-            .map(|u| {
-                (
-                    TransactionOutpoint::from(u.outpoint),
-                    UtxoEntry::from(u.utxo_entry),
-                )
-            })
+            .map(|u| (TransactionOutpoint::from(u.outpoint), UtxoEntry::from(u.utxo_entry)))
             .collect();
         if mature.len() >= 4 {
             return Ok(mature);
