@@ -7,6 +7,7 @@
 //!   kaspa-redteam replay findings/OUT-01.json     re-judge a saved finding
 //!   kaspa-redteam list                            every attack in the library
 //!   kaspa-redteam node --kaspad ./kaspad          node and mining packs on a local simnet
+//!   kaspa-redteam serve --port 8790               the drop-a-file web page
 //!
 //! Exit codes: 0 clean, 1 findings, 2 error.
 
@@ -18,6 +19,8 @@ use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
+
+mod serve;
 
 #[derive(Parser)]
 #[command(name = "kaspa-redteam", version, about = "Attack your Kaspa covenant before mainnet does.")]
@@ -83,6 +86,23 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Web page: drop a .sil file in a browser, get the report (each scan runs isolated, nothing is kept)
+    Serve {
+        /// Address to listen on (put a reverse proxy in front for a public site)
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        #[arg(long, default_value_t = 8790)]
+        port: u16,
+        /// Scans that may run at once
+        #[arg(long, default_value_t = 2)]
+        jobs: usize,
+        /// Seconds before a scan is stopped
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
+        /// Worker threads per scan
+        #[arg(long, default_value_t = 4)]
+        threads: usize,
+    },
     /// Node and mining attacks on local simnet kaspad processes (never mainnet)
     Node {
         /// Path to a kaspad binary
@@ -114,6 +134,10 @@ fn real_main() -> Result<ExitCode> {
     match cli.cmd {
         Some(Cmd::Replay { files }) => replay(&files),
         Some(Cmd::List { json }) => list(json),
+        Some(Cmd::Serve { bind, port, jobs, timeout, threads }) => {
+            serve::serve(serve::ServeOptions { bind, port, jobs: jobs.max(1), timeout, threads: threads.max(1) })?;
+            Ok(ExitCode::SUCCESS)
+        }
         Some(Cmd::Export { file, args }) => {
             let mut overrides = BTreeMap::new();
             for kv in &args {

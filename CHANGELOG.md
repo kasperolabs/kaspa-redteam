@@ -1,5 +1,9 @@
 # Changelog
 
+## Tool 0.2.5 (library 0.2.0)
+
+- `kaspa-redteam serve`: a web page where anyone drops a `.sil` file (plus optional constructor values or a baseline file) and gets the report, the spend map and downloadable repro files. Each scan runs as its own child process in a temporary folder, with a time limit, a 2 GiB memory limit, one scan per visitor and a cap on scans at once; the folder is deleted afterwards.
+
 ## Tool 0.2.4 (library 0.2.0)
 
 - Baseline `own`: outputs that belong to the signing user; attacks no longer report a user taking from their own output. Outputs to a listed key's address count as its own automatically.

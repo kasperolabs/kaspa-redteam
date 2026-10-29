@@ -47,11 +47,47 @@ kaspa-redteam replay findings/*.json           # re-judge saved findings
 kaspa-redteam list                             # the attack library
 kaspa-redteam node --kaspad ./kaspad           # node and mining packs (local simnet)
 kaspa-redteam node --kaspad ./kaspad --nodes 2 --keep   # two linked nodes, keep their data dirs
+kaspa-redteam serve --port 8790                # the web page: drop a .sil in a browser
 ```
 
 Common flags: `--out DIR` (where finding files go, default `findings/`), `--no-color`, and `--only`, `--json`, `-v`, `--badge` work on `node` runs too. `kaspa-redteam --help` and `kaspa-redteam <command> --help` list everything.
 
 Exit codes: `0` clean, `1` findings, `2` error.
+
+## Web page
+
+```
+kaspa-redteam serve                                # http://127.0.0.1:8790
+kaspa-redteam serve --port 8790 --jobs 2 --timeout 120 --threads 4
+```
+
+A single page where anyone can drop a `.sil` file (or paste it), optionally add constructor values or a baseline file, and get the same report the command line gives: verdict, findings with fix patterns, the spend map, every attack's result, and the repro files to download. The page is built into the binary; there is nothing else to install.
+
+Every scan runs as a separate child process of the same binary, in a fresh temporary folder that is deleted when it ends. Limits: `--timeout` seconds per scan (default 120), 2 GiB of memory, `--threads` worker threads per scan, one running scan per visitor and `--jobs` scans at once (others are told to try again). Uploads are capped at 1 MiB. Nothing is logged or kept.
+
+It listens on `127.0.0.1` by default. For a public site, put a reverse proxy in front; the server reads the visitor's address from `X-Real-IP` or `X-Forwarded-For` when the request comes from the same machine. nginx:
+
+```
+server {
+    server_name redteam.example.com;
+    client_max_body_size 2m;
+    location / {
+        proxy_pass http://127.0.0.1:8790;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 180s;
+    }
+}
+```
+
+Keep it running with pm2 (`pm2 start /path/to/kaspa-redteam --name redteam-web -- serve --port 8790`) or a systemd unit. After pulling a new version and rebuilding, restart it so it serves the new binary.
+
+| Route | What |
+| --- | --- |
+| `GET /` | the page |
+| `POST /api/scan` | `{ filename, source, args: ["name=value"], baseline, baseline_name }` → `{ report, files }` (`report` is the `--json` report) |
+| `GET /api/library` | the attack library |
+| `GET /api/example` | a vulnerable example contract |
+| `GET /health` | `ok` |
 
 ## How a covenant run works
 

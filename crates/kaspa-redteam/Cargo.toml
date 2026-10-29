@@ -17,3 +17,5 @@ redteam-node.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
+tiny_http = "0.12"
+libc = "0.2"
