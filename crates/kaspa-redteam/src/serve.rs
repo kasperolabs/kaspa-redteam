@@ -21,21 +21,62 @@ struct Example {
     slug: &'static str,
     title: &'static str,
     blurb: &'static str,
+    /// What is wrong with the broken version, in plain words.
+    bug: &'static str,
+    /// What the fixed version changes.
+    fix: &'static str,
     broken: &'static str,
     fixed: Option<&'static str>,
 }
 
-/// The repo's `examples/`, built into the page.
+/// The examples the page offers: one per kind of bug. The rest of `examples/`
+/// stays in the repo.
 const EXAMPLES: &[Example] = &[
-    Example { slug: "htlc_swap", title: "Atomic swap", blurb: "A secret, or a refund after a timeout.", broken: include_str!("../../../examples/htlc_swap_FAIL.sil"), fixed: Some(include_str!("../../../examples/htlc_swap_PASS.sil")) },
-    Example { slug: "last_will", title: "Inheritance", blurb: "Goes to the heir after a period of silence.", broken: include_str!("../../../examples/last_will_FAIL.sil"), fixed: Some(include_str!("../../../examples/last_will_PASS.sil")) },
-    Example { slug: "recurring_payment", title: "Allowance", blurb: "Pays one installment per period, keeps the rest locked.", broken: include_str!("../../../examples/recurring_payment_FAIL.sil"), fixed: Some(include_str!("../../../examples/recurring_payment_PASS.sil")) },
-    Example { slug: "escrow", title: "Escrow", blurb: "Buyer, seller and an arbiter.", broken: include_str!("../../../examples/escrow_FAIL.sil"), fixed: Some(include_str!("../../../examples/escrow_PASS.sil")) },
-    Example { slug: "crowdfund", title: "Crowdfund pledge", blurb: "All or nothing, refund after the deadline.", broken: include_str!("../../../examples/crowdfund_FAIL.sil"), fixed: Some(include_str!("../../../examples/crowdfund_PASS.sil")) },
-    Example { slug: "revenue_split", title: "Revenue split", blurb: "70% to the artist, the rest to the label.", broken: include_str!("../../../examples/revenue_split_FAIL.sil"), fixed: Some(include_str!("../../../examples/revenue_split_PASS.sil")) },
-    Example { slug: "price_bet", title: "Oracle bet", blurb: "Settled by a signed oracle reading.", broken: include_str!("../../../examples/price_bet_FAIL.sil"), fixed: Some(include_str!("../../../examples/price_bet_PASS.sil")) },
-    Example { slug: "name_registry", title: "Name registry", blurb: "One coin per name, owner kept in state.", broken: include_str!("../../../examples/name_registry_FAIL.sil"), fixed: Some(include_str!("../../../examples/name_registry_PASS.sil")) },
-    Example { slug: "leaky_vault", title: "Leaky vault", blurb: "Every classic covenant bug in one file.", broken: include_str!("../../../examples/leaky_vault_FAIL.sil"), fixed: None },
+    Example {
+        slug: "htlc_swap",
+        title: "Atomic swap",
+        blurb: "A coin unlocked by a secret, or refunded after a timeout.",
+        bug: "the secret alone unlocks the coin. When the rightful claimer reveals it, anyone watching the network can copy it and take the coin first.",
+        fix: "the claimer must also sign, so a copied secret is useless to anyone else.",
+        broken: include_str!("../../../examples/htlc_swap_FAIL.sil"),
+        fixed: Some(include_str!("../../../examples/htlc_swap_PASS.sil")),
+    },
+    Example {
+        slug: "last_will",
+        title: "Inheritance",
+        blurb: "Goes to the heir after a long silence from the owner.",
+        bug: "after the waiting period anyone can trigger the payout, and nothing says it has to go to the heir. The first person to try can send it to themselves.",
+        fix: "the payout can only go to the heir.",
+        broken: include_str!("../../../examples/last_will_FAIL.sil"),
+        fixed: Some(include_str!("../../../examples/last_will_PASS.sil")),
+    },
+    Example {
+        slug: "escrow",
+        title: "Escrow",
+        blurb: "A buyer, a seller and an arbiter who settles disputes.",
+        bug: "the arbiter's signature is checked against a key the caller supplies, so anyone can sign as the arbiter and settle the dispute in their own favor.",
+        fix: "the arbiter is the key fixed when the escrow was created, and can only pay the buyer or the seller.",
+        broken: include_str!("../../../examples/escrow_FAIL.sil"),
+        fixed: Some(include_str!("../../../examples/escrow_PASS.sil")),
+    },
+    Example {
+        slug: "name_registry",
+        title: "Name registry",
+        blurb: "One coin per name; the owner is recorded inside the coin.",
+        bug: "anyone can move the coin and record themselves as the new owner. There is no check that the current owner agreed.",
+        fix: "only the current owner's signature can hand the name on.",
+        broken: include_str!("../../../examples/name_registry_FAIL.sil"),
+        fixed: Some(include_str!("../../../examples/name_registry_PASS.sil")),
+    },
+    Example {
+        slug: "leaky_vault",
+        title: "Leaky vault",
+        blurb: "Every classic covenant bug in one file.",
+        bug: "eight paths, each with a different classic bug: optional signatures, keys chosen by the caller, unpinned payouts, shared inputs and more.",
+        fix: "",
+        broken: include_str!("../../../examples/leaky_vault_FAIL.sil"),
+        fixed: None,
+    },
 ];
 const MAX_BODY: usize = 1 << 20; // 1 MiB: a contract plus a baseline file
 const MAX_SOURCE: usize = 256 * 1024;
@@ -122,6 +163,8 @@ fn handle(mut req: tiny_http::Request, s: &Shared) {
                         "slug": e.slug,
                         "title": e.title,
                         "blurb": e.blurb,
+                        "bug": e.bug,
+                        "fix": e.fix,
                         "broken": { "filename": format!("{}_FAIL.sil", e.slug), "source": e.broken },
                         "fixed": e.fixed.map(|s| json!({ "filename": format!("{}_PASS.sil", e.slug), "source": s })),
                     })

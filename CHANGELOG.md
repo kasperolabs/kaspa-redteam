@@ -1,5 +1,9 @@
 # Changelog
 
+## Tool 0.3.3 (library 0.3.0)
+
+- Web page: examples move into the form as one menu with a Broken/Fixed switch. Choosing one fills the source box and explains the bug (or the fix) in plain words; only "Attack it" runs anything. Five examples on the page, one per kind of bug; the rest stay in `examples/`. After an example run, one line offers the other version. Pressing "Attack it" scrolls to the status.
+
 ## Tool 0.3.2 (library 0.3.0)
 
 - Web page: the examples are built in. An "Examples" grid under the form loads any of them, broken or fixed, shows the source and runs it in one click. `GET /api/examples` lists them.

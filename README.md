@@ -92,7 +92,7 @@ Keep it running with pm2 (`pm2 start /path/to/kaspa-redteam --name redteam-web -
 | `GET /` | the page |
 | `POST /api/scan` | `{ filename, source, args: ["name=value"], baseline, baseline_name }` → `{ report, files }` (`report` is the `--json` report) |
 | `GET /api/library` | the attack library |
-| `GET /api/examples` | the built-in examples (`examples/`), each broken and fixed |
+| `GET /api/examples` | the examples the page offers, broken and fixed, with the bug and the fix in plain words |
 | `GET /api/example` | one vulnerable example contract |
 | `GET /health` | `ok` |
 
