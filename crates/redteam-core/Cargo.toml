@@ -1,0 +1,13 @@
+[package]
+name = "redteam-core"
+description = "Shared types for kaspa-redteam: attack metadata, findings, reports, badge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+faster-hex.workspace = true

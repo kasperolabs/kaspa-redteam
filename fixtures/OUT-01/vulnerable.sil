@@ -1,0 +1,10 @@
+// OUT-01 vulnerable: anyone may trigger the payout, and the value is checked,
+// but not who receives it.
+pragma silverscript ^0.1.0;
+
+contract Payout(pubkey payee, int maxFee) {
+    entry pay() {
+        require(tx.inputs.length == 1);
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - maxFee);
+    }
+}

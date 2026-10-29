@@ -1,0 +1,46 @@
+// Pledge v3 (Kaspero Labs, GoKasMe). Draft.
+pragma silverscript ^0.1.0;
+
+contract Pledge(
+    pubkey backer,
+    pubkey project,
+    pubkey platform,
+    int goal,
+    temporal deadline,
+    int cutBps,
+    byte[32] ticketHash
+) {
+    int constant MAX_FEE = 1000000;
+
+    entry claim() {
+        require(tx.inputs[0].scriptPubKey == byte[](new ScriptPubKeyP2SH(ticketHash)));
+        require(tx.outputs.length == 2);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(project)));
+        require(tx.outputs[1].scriptPubKey == byte[](new ScriptPubKeyP2PK(platform)));
+
+        int ticket = tx.inputs[0].value;
+        require(tx.outputs[1].value >= ticket);
+        int cut = tx.outputs[1].value - ticket;
+        int raised = tx.outputs[0].value + cut;
+        require(raised >= goal);
+        require(cut * 10000 <= raised * cutBps);
+    }
+
+    entry refund() {
+        require(tx.time >= deadline);
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 1);
+        int current = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(backer)));
+        require(tx.outputs[0].value >= current - MAX_FEE);
+    }
+
+    entry dissolve(sig platformSig) {
+        require(checkSig(platformSig, platform));
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 1);
+        int current = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(backer)));
+        require(tx.outputs[0].value >= current - MAX_FEE);
+    }
+}

@@ -1,0 +1,8 @@
+// SIG-02 vulnerable: the signature is checked against a key the spender passes in.
+pragma silverscript ^0.1.0;
+
+contract Withdraw(pubkey owner) {
+    entry withdraw(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+    }
+}

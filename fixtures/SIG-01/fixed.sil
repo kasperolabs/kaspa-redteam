@@ -1,0 +1,8 @@
+// SIG-01 fixed: the owner's signature is required.
+pragma silverscript ^0.1.0;
+
+contract Withdraw(pubkey owner) {
+    entry withdraw(sig s) {
+        require(checkSig(s, owner));
+    }
+}

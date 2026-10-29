@@ -1,0 +1,9 @@
+// ClaimTicket v1 (Kaspero Labs, GoKasMe). Draft.
+pragma silverscript ^0.1.0;
+
+contract ClaimTicket(pubkey platform, int campaign) {
+    entry spend(sig platformSig, int id) {
+        require(id == campaign);
+        require(checkSig(platformSig, platform));
+    }
+}

@@ -1,0 +1,8 @@
+// SIG-02 fixed: the key comes from the constructor, not from the spender.
+pragma silverscript ^0.1.0;
+
+contract Withdraw(pubkey owner) {
+    entry withdraw(sig s) {
+        require(checkSig(s, owner));
+    }
+}

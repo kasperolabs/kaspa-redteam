@@ -1,0 +1,9 @@
+// SEC-01 fixed: the secret AND the claimer's signature are required.
+pragma silverscript ^0.1.0;
+
+contract HashLock(byte[32] hash, pubkey claimer) {
+    entry claim(byte[] secret, sig s) {
+        require(sha256(secret) == hash);
+        require(checkSig(s, claimer));
+    }
+}

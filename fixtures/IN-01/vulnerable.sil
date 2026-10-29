@@ -1,0 +1,10 @@
+// IN-01 vulnerable: output 0 is fully checked, but two coins of this
+// covenant can share it.
+pragma silverscript ^0.1.0;
+
+contract Payout(pubkey payee, int maxFee) {
+    entry pay() {
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(payee)));
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - maxFee);
+    }
+}

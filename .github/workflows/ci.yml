@@ -1,0 +1,15 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # every attack: vulnerable fixture caught, fixed fixture silent
+      - run: cargo test --workspace
+      - run: cargo build --release
+      # the corpus must keep its known results
+      - run: ./target/release/kaspa-redteam corpus/minerdrip_v2.sil
+      - run: "! ./target/release/kaspa-redteam corpus/minerdrip_v1.sil"

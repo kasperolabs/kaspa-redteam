@@ -1,0 +1,11 @@
+// OUT-03 vulnerable: anyone may pull `cap` to the payee; output 0 is checked,
+// the change output 1 is not.
+pragma silverscript ^0.1.0;
+
+contract CappedPull(pubkey payee, int cap, int maxFee) {
+    entry pull() {
+        require(tx.inputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(payee)));
+        require(tx.outputs[0].value == cap);
+    }
+}

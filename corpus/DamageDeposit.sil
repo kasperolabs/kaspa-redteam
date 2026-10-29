@@ -1,0 +1,68 @@
+// DamageDeposit: Turnkey 7.2 (Kaspero Labs). Compile-checked Oct 4, 2026; mainnet tests pending.
+pragma silverscript ^0.1.0;
+
+contract DamageDeposit(pubkey renter, pubkey owner, pubkey referee, byte[] ownerScript,
+                       pubkey conductor, byte[32] sessionId, int claimCap, int timeoutDaa) {
+    int constant MAX_FEE = 2000000;
+    int constant MIN_OUT = 100000000;
+    int constant CAP_BOUND = 100000000000000;
+
+    entry clean(datasig s, byte[] msg) {
+        require(msg.length == 36);
+        require(checkMsgSig(s, byte[32](blake2b(msg)), conductor));
+        (byte[] tag, byte[] sid) = msg.split(4);
+        require(tag == byte[](0x52434c4e));
+        require(sid == byte[](sessionId));
+
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(renter)));
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - MAX_FEE);
+    }
+
+    entry claim(sig ownerSig, sig refereeSig) {
+        require(checkSig(ownerSig, owner));
+        require(checkSig(refereeSig, referee));
+        require(claimCap >= MIN_OUT && claimCap <= CAP_BOUND);
+
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 2);
+        int current = tx.inputs[this.activeInputIndex].value;
+        int paid = tx.outputs[0].value;
+        require(tx.outputs[0].scriptPubKey == ownerScript);
+        require(paid >= MIN_OUT && paid <= claimCap);
+        require(tx.outputs[1].scriptPubKey == byte[](new ScriptPubKeyP2PK(renter)));
+        require(tx.outputs[1].value >= current - paid - MAX_FEE);
+    }
+
+    entry settleAgreed(sig ownerSig, sig renterSig) {
+        require(checkSig(ownerSig, owner));
+        require(checkSig(renterSig, renter));
+
+        require(tx.inputs.length == 1);
+        int current = tx.inputs[this.activeInputIndex].value;
+        byte[] renterScript = byte[](new ScriptPubKeyP2PK(renter));
+        if (tx.outputs.length == 1) {
+            byte[] to = tx.outputs[0].scriptPubKey;
+            require(to == ownerScript || to == renterScript);
+            require(tx.outputs[0].value >= MIN_OUT);
+            require(tx.outputs[0].value >= current - MAX_FEE);
+        } else {
+            require(tx.outputs.length == 2);
+            require(tx.outputs[0].scriptPubKey == ownerScript);
+            require(tx.outputs[1].scriptPubKey == renterScript);
+            require(tx.outputs[0].value >= MIN_OUT);
+            require(tx.outputs[1].value >= MIN_OUT);
+            require(tx.outputs[0].value + tx.outputs[1].value >= current - MAX_FEE);
+        }
+    }
+
+    entry timeout(sig renterSig) {
+        require(checkSig(renterSig, renter));
+        require(this.ageDaa >= timeoutDaa);
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(renter)));
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - MAX_FEE);
+    }
+}

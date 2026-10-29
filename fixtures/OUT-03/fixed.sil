@@ -1,0 +1,12 @@
+// OUT-03 fixed: the change must go back to the covenant, minus at most maxFee.
+pragma silverscript ^0.1.0;
+
+contract CappedPull(pubkey payee, int cap, int maxFee) {
+    entry pull() {
+        require(tx.inputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(payee)));
+        require(tx.outputs[0].value == cap);
+        require(tx.outputs[1].scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey);
+        require(tx.outputs[1].value >= tx.inputs[this.activeInputIndex].value - cap - maxFee);
+    }
+}

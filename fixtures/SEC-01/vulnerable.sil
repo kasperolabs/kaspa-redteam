@@ -1,0 +1,8 @@
+// SEC-01 vulnerable: whoever shows the secret takes the coin, wherever they like.
+pragma silverscript ^0.1.0;
+
+contract HashLock(byte[32] hash, pubkey claimer) {
+    entry claim(byte[] secret) {
+        require(sha256(secret) == hash);
+    }
+}

@@ -1,0 +1,26 @@
+[package]
+name = "redteam-covenant"
+description = "Covenant engine for kaspa-redteam: compiles SilverScript in process and judges hostile spends with rusty-kaspa consensus code"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+redteam-core.workspace = true
+silverscript-lang.workspace = true
+silverscript-abi.workspace = true
+kaspa-consensus.workspace = true
+kaspa-consensus-core.workspace = true
+kaspa-txscript.workspace = true
+kaspa-txscript-errors.workspace = true
+kaspa-hashes.workspace = true
+secp256k1.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+blake2b_simd.workspace = true
+faster-hex.workspace = true
+inventory.workspace = true
+anyhow.workspace = true
+borsh.workspace = true

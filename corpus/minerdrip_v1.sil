@@ -1,0 +1,24 @@
+// MinerDrip v1 (Kaspero Labs). Compiled on silverc v1; claim and reveal spent on Kaspa mainnet Oct 10-11, 2026.
+// v2 later added tx.inputs.length == 1 to close the equal-coin merge.
+pragma silverscript ^0.1.0;
+
+contract MinerDrip(int period, int divisor, int minPrize, byte[32] tokenId, int endowment) {
+    entry claim() {
+        require(tokenId == tokenId);
+        require(this.ageDaa >= period);
+        int balance = tx.inputs[this.activeInputIndex].value;
+        int prize = balance / divisor;
+        if (prize < minPrize) { prize = minPrize; }
+        require(balance - prize >= minPrize);
+        require(tx.outputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey);
+        require(tx.outputs[0].value == balance - prize);
+    }
+    entry reveal() {
+        int balance = tx.inputs[this.activeInputIndex].value;
+        require(balance >= endowment);
+        require(tx.outputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey);
+        require(tx.outputs[0].value == balance - minPrize);
+    }
+}

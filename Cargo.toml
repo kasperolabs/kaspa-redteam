@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = ["crates/redteam-core", "crates/redteam-covenant", "crates/redteam-node", "crates/kaspa-redteam"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/kasperolabs/kaspa-redteam"
+rust-version = "1.94.0"
+
+[workspace.dependencies]
+redteam-core = { path = "crates/redteam-core" }
+redteam-covenant = { path = "crates/redteam-covenant" }
+redteam-node = { path = "crates/redteam-node" }
+
+# SilverScript compiler as a library: no external silverc binary needed.
+silverscript-lang = { git = "https://github.com/kaspanet/silverscript", rev = "15b7bc27680bdf0d83b294fbbfda55ecb59958ca" }
+silverscript-abi = { git = "https://github.com/kaspanet/silverscript", rev = "15b7bc27680bdf0d83b294fbbfda55ecb59958ca" }
+
+# rusty-kaspa crates, same versions silverscript is built against.
+kaspa-consensus = "2.1.0"
+kaspa-consensus-core = "2.1.0"
+kaspa-txscript = "2.1.0"
+kaspa-txscript-errors = "2.1.0"
+kaspa-hashes = "2.1.0"
+kaspa-addresses = "2.1.0"
+kaspa-rpc-core = "2.1.0"
+kaspa-wrpc-client = "2.1.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process"] }
+
+secp256k1 = { version = "0.29.0", features = ["global-context", "rand-std", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+blake2b_simd = "1.0.2"
+faster-hex = "0.10"
+inventory = "0.3"
+anyhow = "1"
+borsh = "1"
+thiserror = "1"
+clap = { version = "4.5", features = ["derive"] }
+rand = "0.8.5"
+rand_chacha = "0.3"

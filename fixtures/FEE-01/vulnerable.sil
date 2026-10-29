@@ -1,0 +1,10 @@
+// FEE-01 vulnerable: one output to the payee, but nothing says how much.
+pragma silverscript ^0.1.0;
+
+contract Payout(pubkey payee, int maxFee) {
+    entry pay() {
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(payee)));
+    }
+}

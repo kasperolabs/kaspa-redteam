@@ -1,0 +1,8 @@
+// SIG-01 vulnerable: the signature check is evaluated but never required.
+pragma silverscript ^0.1.0;
+
+contract Withdraw(pubkey owner) {
+    entry withdraw(sig s) {
+        require(checkSig(s, owner) || tx.inputs.length >= 1);
+    }
+}
