@@ -1,6 +1,6 @@
 # Examples
 
-Small contracts in the shapes that came first on other chains, each in a broken and a correct version. The file name says what the red team should report: `_FAIL` has at least one finding, `_PASS` has none and every path explored. `cargo test` checks both.
+Small contracts in the shapes that came first on other chains, each in a broken and a correct version. The file name says what the red team should report: `_FAIL` has at least one finding, `_PASS` has none and every path explored. `cargo test` checks both. They are also built into the web page (`kaspa-redteam serve`): the Examples grid under the form runs any of them in one click.
 
 | Contract | What it is | `_FAIL` is caught by |
 | --- | --- | --- |

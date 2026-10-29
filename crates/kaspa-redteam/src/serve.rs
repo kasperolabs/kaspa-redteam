@@ -17,7 +17,26 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const PAGE: &str = include_str!("web/index.html");
-const EXAMPLE: &str = include_str!("../../../fixtures/OUT-03/vulnerable.sil");
+struct Example {
+    slug: &'static str,
+    title: &'static str,
+    blurb: &'static str,
+    broken: &'static str,
+    fixed: Option<&'static str>,
+}
+
+/// The repo's `examples/`, built into the page.
+const EXAMPLES: &[Example] = &[
+    Example { slug: "htlc_swap", title: "Atomic swap", blurb: "A secret, or a refund after a timeout.", broken: include_str!("../../../examples/htlc_swap_FAIL.sil"), fixed: Some(include_str!("../../../examples/htlc_swap_PASS.sil")) },
+    Example { slug: "last_will", title: "Inheritance", blurb: "Goes to the heir after a period of silence.", broken: include_str!("../../../examples/last_will_FAIL.sil"), fixed: Some(include_str!("../../../examples/last_will_PASS.sil")) },
+    Example { slug: "recurring_payment", title: "Allowance", blurb: "Pays one installment per period, keeps the rest locked.", broken: include_str!("../../../examples/recurring_payment_FAIL.sil"), fixed: Some(include_str!("../../../examples/recurring_payment_PASS.sil")) },
+    Example { slug: "escrow", title: "Escrow", blurb: "Buyer, seller and an arbiter.", broken: include_str!("../../../examples/escrow_FAIL.sil"), fixed: Some(include_str!("../../../examples/escrow_PASS.sil")) },
+    Example { slug: "crowdfund", title: "Crowdfund pledge", blurb: "All or nothing, refund after the deadline.", broken: include_str!("../../../examples/crowdfund_FAIL.sil"), fixed: Some(include_str!("../../../examples/crowdfund_PASS.sil")) },
+    Example { slug: "revenue_split", title: "Revenue split", blurb: "70% to the artist, the rest to the label.", broken: include_str!("../../../examples/revenue_split_FAIL.sil"), fixed: Some(include_str!("../../../examples/revenue_split_PASS.sil")) },
+    Example { slug: "price_bet", title: "Oracle bet", blurb: "Settled by a signed oracle reading.", broken: include_str!("../../../examples/price_bet_FAIL.sil"), fixed: Some(include_str!("../../../examples/price_bet_PASS.sil")) },
+    Example { slug: "name_registry", title: "Name registry", blurb: "One coin per name, owner kept in state.", broken: include_str!("../../../examples/name_registry_FAIL.sil"), fixed: Some(include_str!("../../../examples/name_registry_PASS.sil")) },
+    Example { slug: "leaky_vault", title: "Leaky vault", blurb: "Every classic covenant bug in one file.", broken: include_str!("../../../examples/leaky_vault_FAIL.sil"), fixed: None },
+];
 const MAX_BODY: usize = 1 << 20; // 1 MiB: a contract plus a baseline file
 const MAX_SOURCE: usize = 256 * 1024;
 const MAX_ARGS: usize = 32;
@@ -95,8 +114,24 @@ fn handle(mut req: tiny_http::Request, s: &Shared) {
         (tiny_http::Method::Get, "/") | (tiny_http::Method::Get, "/index.html") => {
             respond(req, 200, "text/html; charset=utf-8", PAGE)
         }
+        (tiny_http::Method::Get, "/api/examples") => {
+            let list: Vec<Value> = EXAMPLES
+                .iter()
+                .map(|e| {
+                    json!({
+                        "slug": e.slug,
+                        "title": e.title,
+                        "blurb": e.blurb,
+                        "broken": { "filename": format!("{}_FAIL.sil", e.slug), "source": e.broken },
+                        "fixed": e.fixed.map(|s| json!({ "filename": format!("{}_PASS.sil", e.slug), "source": s })),
+                    })
+                })
+                .collect();
+            respond_json(req, 200, &json!({ "examples": list }))
+        }
         (tiny_http::Method::Get, "/api/example") => {
-            respond_json(req, 200, &json!({ "filename": "out03-example.sil", "source": EXAMPLE }))
+            let e = EXAMPLES.iter().find(|e| e.slug == "leaky_vault").expect("built in");
+            respond_json(req, 200, &json!({ "filename": "leaky_vault_FAIL.sil", "source": e.broken }))
         }
         (tiny_http::Method::Get, "/api/library") => {
             let mut rows: Vec<&'static redteam_core::AttackMeta> =

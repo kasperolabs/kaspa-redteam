@@ -1,5 +1,9 @@
 # Changelog
 
+## Tool 0.3.2 (library 0.3.0)
+
+- Web page: the examples are built in. An "Examples" grid under the form loads any of them, broken or fixed, shows the source and runs it in one click. `GET /api/examples` lists them.
+
 ## Tool 0.3.1 (library 0.3.0)
 
 - `examples/`: eight everyday contract shapes (swap, inheritance, allowance, escrow, crowdfund, revenue split, oracle bet, name registry), each as `_FAIL` and `_PASS`, plus `leaky_vault_FAIL`; a test keeps the names honest.

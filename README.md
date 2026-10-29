@@ -92,7 +92,8 @@ Keep it running with pm2 (`pm2 start /path/to/kaspa-redteam --name redteam-web -
 | `GET /` | the page |
 | `POST /api/scan` | `{ filename, source, args: ["name=value"], baseline, baseline_name }` → `{ report, files }` (`report` is the `--json` report) |
 | `GET /api/library` | the attack library |
-| `GET /api/example` | a vulnerable example contract |
+| `GET /api/examples` | the built-in examples (`examples/`), each broken and fixed |
+| `GET /api/example` | one vulnerable example contract |
 | `GET /health` | `ok` |
 
 ## How a covenant run works
