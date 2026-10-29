@@ -67,6 +67,8 @@ pub fn spend_map(c: &Contract, paths: &[PathStatus]) -> serde_json::Value {
                     } else if !b.signers.is_empty() {
                         let names: Vec<_> = b.signers.iter().map(|k| c.wallets.label(*k)).collect();
                         format!("signed by {}", names.join(" + "))
+                    } else if b.plan.has_resigned() {
+                        "a user holding the baseline's listed key (the tool re-signs)".to_string()
                     } else if !b.secrets.is_empty() {
                         format!("anyone holding {} (no transaction signature)", b.secrets.join(" + "))
                     } else {

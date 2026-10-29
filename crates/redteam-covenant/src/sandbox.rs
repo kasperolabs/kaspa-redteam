@@ -169,11 +169,19 @@ pub struct OutputSpec {
     pub to: Dest,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub covenant: Option<CovenantBinding>,
+    /// Already the attacker's (an imported output the baseline marks as the
+    /// signing user's own): taking from it takes nothing from anyone else.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub own: bool,
 }
 
 impl OutputSpec {
     pub fn new(value: u64, to: Dest) -> Self {
-        Self { value, to, covenant: None }
+        Self { value, to, covenant: None, own: false }
+    }
+    /// The attacker's own output: redirecting or skimming it proves nothing.
+    pub fn is_attackers(&self) -> bool {
+        self.own || self.to == Dest::Key(KeyRef::Attacker)
     }
 }
 
@@ -242,6 +250,10 @@ impl SpendPlan {
             }
         }
         v
+    }
+    /// Some input carries a signature the tool remakes with a baseline key.
+    pub fn has_resigned(&self) -> bool {
+        self.inputs.iter().any(|i| matches!(i, InputSpec::Raw(r) if r.resign.is_some()))
     }
     pub fn has_sig_recipe(&self) -> bool {
         self.inputs.iter().any(

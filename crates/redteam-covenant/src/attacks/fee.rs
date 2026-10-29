@@ -25,10 +25,10 @@ impl CovenantAttack for Fee01 {
     fn attempts(&self, cx: &AttackCx) -> Result<Vec<Attempt>, String> {
         Ok(cx
             .live_paths()
-            .filter(|(_, b)| b.permissionless())
+            .filter(|(_, b)| b.permissionless() && b.plan.outputs.iter().any(|o| !o.is_attackers()))
             .map(|(p, b)| {
                 let mut plan = b.plan.clone();
-                for o in plan.outputs.iter_mut() {
+                for o in plan.outputs.iter_mut().filter(|o| !o.is_attackers()) {
                     o.value /= 2;
                 }
                 let burned = b.plan.output_total() - plan.output_total();

@@ -212,6 +212,11 @@ fn judge_attempts(cx: &AttackCx, meta: &'static AttackMeta, list: Vec<Attempt>) 
                     stand_ins.join("`, `")
                 ));
             }
+            if a.plan.has_resigned() {
+                explanation.push_str(
+                    " Note: here the attacker signs with the baseline's listed key, so this is what a user of the covenant holding that key (a buyer, a seller) can do; an outsider cannot.",
+                );
+            }
             findings.push(Finding {
                 id: meta.id.into(),
                 title: meta.title.into(),

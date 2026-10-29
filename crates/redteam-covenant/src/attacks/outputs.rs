@@ -45,6 +45,9 @@ impl CovenantAttack for Out01 {
                 takeover: true,
             });
             for j in 0..b.plan.outputs.len() {
+                if b.plan.outputs[j].is_attackers() {
+                    continue; // already the attacker's own
+                }
                 let mut plan = b.plan.clone();
                 let was = dest_label(cx, &plan.outputs[j].to);
                 plan.outputs[j].to = Dest::Key(KeyRef::Attacker);
@@ -87,6 +90,9 @@ impl CovenantAttack for Out02 {
     fn attempts(&self, cx: &AttackCx) -> Result<Vec<Attempt>, String> {
         let mut out = Vec::new();
         for (p, b) in cx.live_paths().filter(|(_, b)| b.permissionless()) {
+            if b.plan.outputs[0].is_attackers() {
+                continue;
+            }
             let mut plan = b.plan.clone();
             let honest = plan.outputs[0].value;
             let reduced = (honest / 10).max(10_000);
@@ -142,6 +148,9 @@ impl CovenantAttack for Out03 {
             }
             any_multi = true;
             for j in 1..b.plan.outputs.len() {
+                if b.plan.outputs[j].is_attackers() {
+                    continue;
+                }
                 let mut plan = b.plan.clone();
                 let honest = plan.outputs[j].value;
                 let half = honest / 2;

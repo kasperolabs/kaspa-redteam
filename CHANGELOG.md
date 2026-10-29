@@ -1,5 +1,11 @@
 # Changelog
 
+## Tool 0.2.4 (library 0.2.0)
+
+- Baseline `own`: outputs that belong to the signing user; attacks no longer report a user taking from their own output. Outputs to a listed key's address count as its own automatically.
+- Baseline import: only a 65-byte push ending in a sighash type counts as a signature (a KCC-20 transfer's 64-byte argument columns made a path look signed by an outsider).
+- Reports say when a finding needs the listed key (a user of the covenant), and the spend map names that signer.
+
 ## Tool 0.2.3 (library 0.2.0)
 
 - Baseline `keys`: throwaway private keys the harness signed with. A transaction signature one of them made is signed again after every change, so attacks can alter what that key signed over (the seller's own signature in a market sell, for example). Without keys such a path stays outsider-only, as before.

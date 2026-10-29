@@ -96,7 +96,7 @@ impl CovenantAttack for In02 {
             let mut plan = b.plan.clone();
             plan.inputs.insert(0, InputSpec::P2pk { owner: KeyRef::Attacker, value: bait });
             // Every honest output shrinks as if the covenant only held `bait`.
-            for o in plan.outputs.iter_mut() {
+            for o in plan.outputs.iter_mut().filter(|o| !o.is_attackers()) {
                 o.value = (o.value as u128 * bait as u128 / cov_value as u128) as u64;
             }
             let taken = plan.input_total().saturating_sub(plan.output_total()).saturating_sub(fee);

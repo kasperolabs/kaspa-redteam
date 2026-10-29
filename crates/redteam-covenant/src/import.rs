@@ -75,8 +75,13 @@ fn is_plain_p2pk(spk: &ScriptPublicKey) -> bool {
     spk.version() == 0 && s.len() == 34 && s[0] == 0x20 && s[33] == 0xac
 }
 
+/// A 65-byte push ending in a sighash type: a Schnorr transaction signature.
+/// (A 64-byte push is not counted: KCC-20 transfer arguments, for one, pack two
+/// 32-byte fields into exactly that.)
 fn carries_signature(sig_script: &[u8]) -> bool {
-    script::tokenize(sig_script).iter().any(|t| matches!(t, Token::Push(b) if b.len() == 65 || b.len() == 64))
+    script::tokenize(sig_script)
+        .iter()
+        .any(|t| matches!(t, Token::Push(b) if b.len() == 65 && matches!(b[64], 0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83)))
 }
 
 /// Reads a baseline file into paths ready to attack. The `contract` gives
@@ -245,7 +250,12 @@ fn parse_one(
     if !specs.iter().any(|s| s.target) {
         bail!("no input is a covenant under test; set `targets` to the covenant input indexes");
     }
-    let raw_outputs = parse_outputs(outputs, &[])?;
+    let own: Vec<usize> = item
+        .get("own")
+        .and_then(|t| t.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_u64().map(|v| v as usize)).collect())
+        .unwrap_or_default();
+    let raw_outputs = parse_outputs(outputs, &[], &own)?;
     let lock_time = opt_num(tx, "lockTime")?.unwrap_or(0);
     let payload = match tx.get("payload") {
         None | Some(Value::Null) => vec![],
@@ -276,7 +286,17 @@ fn parse_one(
     // outpoint and would break. Then everything stays verbatim.
     // A signature the tool can remake (a baseline key made it) does not count.
     let any_signed_target = specs.iter().any(|s| s.signed && (s.target || !is_plain_p2pk(&s.entry.script_public_key)));
-    let mut replaced: Vec<ScriptPublicKey> = Vec::new();
+    // Coins and outputs at a listed key's own address belong to the attacker too.
+    let mut replaced: Vec<ScriptPublicKey> = keys
+        .iter()
+        .map(|kp| {
+            let mut s = Vec::with_capacity(34);
+            s.push(0x20);
+            s.extend_from_slice(&kp.x_only_public_key().0.serialize());
+            s.push(0xac);
+            ScriptPublicKey::new(0, s.into())
+        })
+        .collect();
     let mut plan_inputs = Vec::with_capacity(specs.len());
     for s in specs {
         if !s.target && !any_signed_target && is_plain_p2pk(&s.entry.script_public_key) {
@@ -287,7 +307,7 @@ fn parse_one(
         }
     }
 
-    let plan_outputs = parse_outputs(outputs, &replaced)?;
+    let plan_outputs = parse_outputs(outputs, &replaced, &own)?;
 
     Ok(SpendPlan {
         version,
@@ -301,7 +321,7 @@ fn parse_one(
 }
 
 /// Outputs; those paying a `replaced` funding script go to the attacker, who now owns it.
-fn parse_outputs(outputs: &[Value], replaced: &[ScriptPublicKey]) -> Result<Vec<OutputSpec>> {
+fn parse_outputs(outputs: &[Value], replaced: &[ScriptPublicKey], own: &[usize]) -> Result<Vec<OutputSpec>> {
     let mut plan_outputs = Vec::with_capacity(outputs.len());
     for (i, o) in outputs.iter().enumerate() {
         let w = format!("outputs[{i}]");
@@ -316,7 +336,7 @@ fn parse_outputs(outputs: &[Value], replaced: &[ScriptPublicKey]) -> Result<Vec<
             )),
         };
         let to = if replaced.contains(&s) { Dest::Key(KeyRef::Attacker) } else { Dest::Raw(s) };
-        plan_outputs.push(OutputSpec { value, to, covenant });
+        plan_outputs.push(OutputSpec { value, own: own.contains(&i), to, covenant });
     }
     Ok(plan_outputs)
 }
