@@ -170,20 +170,25 @@ fn client_ip(req: &tiny_http::Request) -> IpAddr {
 
 fn handle(mut req: tiny_http::Request, s: &Shared) {
     let url = req.url().split('?').next().unwrap_or("/").to_string();
-    match (req.method(), url.as_str()) {
-        (tiny_http::Method::Get, "/") | (tiny_http::Method::Get, "/index.html") => {
+    // HEAD is answered like GET (link-preview crawlers often ask HEAD first); the body is dropped.
+    let method = match req.method() {
+        tiny_http::Method::Head => tiny_http::Method::Get,
+        m => m.clone(),
+    };
+    match (&method, url.as_str()) {
+        (&tiny_http::Method::Get, "/") | (&tiny_http::Method::Get, "/index.html") => {
             // Link previews need absolute URLs: build them from the host the page was asked for.
             let page = PAGE.replace("%ORIGIN%", &origin(&req));
             respond(req, 200, "text/html; charset=utf-8", page)
         }
-        (tiny_http::Method::Get, "/og.png") => {
+        (&tiny_http::Method::Get, "/og.png") => {
             let header = |k: &str, v: &str| tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).expect("ascii header");
             let resp = tiny_http::Response::from_data(OG_IMAGE.to_vec())
                 .with_header(header("Content-Type", "image/png"))
                 .with_header(header("Cache-Control", "public, max-age=86400"));
             let _ = req.respond(resp);
         }
-        (tiny_http::Method::Get, "/api/examples") => {
+        (&tiny_http::Method::Get, "/api/examples") => {
             let list: Vec<Value> = EXAMPLES
                 .iter()
                 .map(|e| {
@@ -200,11 +205,11 @@ fn handle(mut req: tiny_http::Request, s: &Shared) {
                 .collect();
             respond_json(req, 200, &json!({ "examples": list }))
         }
-        (tiny_http::Method::Get, "/api/example") => {
+        (&tiny_http::Method::Get, "/api/example") => {
             let e = EXAMPLES.iter().find(|e| e.slug == "leaky_vault").expect("built in");
             respond_json(req, 200, &json!({ "filename": "leaky_vault_FAIL.sil", "source": e.broken }))
         }
-        (tiny_http::Method::Get, "/api/library") => {
+        (&tiny_http::Method::Get, "/api/library") => {
             let mut rows: Vec<&'static redteam_core::AttackMeta> =
                 redteam_covenant::registry().iter().map(|a| a.meta()).collect();
             rows.extend(redteam_node::registry().iter().map(|a| a.meta()));
@@ -218,8 +223,8 @@ fn handle(mut req: tiny_http::Request, s: &Shared) {
                 }),
             )
         }
-        (tiny_http::Method::Get, "/health") => respond(req, 200, "text/plain", "ok"),
-        (tiny_http::Method::Post, "/api/scan") => {
+        (&tiny_http::Method::Get, "/health") => respond(req, 200, "text/plain", "ok"),
+        (&tiny_http::Method::Post, "/api/scan") => {
             let ip = client_ip(&req);
             let mut body = Vec::new();
             let read = req.as_reader().take(MAX_BODY as u64 + 1).read_to_end(&mut body);

@@ -1,5 +1,9 @@
 # Changelog
 
+## Tool 0.3.5 (library 0.3.0)
+
+- Web page: `HEAD` requests are answered like `GET` (they returned 404, and link-preview crawlers often ask `HEAD` first).
+
 ## Tool 0.3.4 (library 0.3.0)
 
 - Web page: link-preview card (Open Graph and X `summary_large_image`), served at `/og.png`, with absolute URLs built from the request's host. Behind nginx, pass `proxy_set_header Host $host;`.
