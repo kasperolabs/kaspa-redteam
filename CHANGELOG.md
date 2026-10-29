@@ -1,5 +1,9 @@
 # Changelog
 
+## Tool 0.3.4 (library 0.3.0)
+
+- Web page: link-preview card (Open Graph and X `summary_large_image`), served at `/og.png`, with absolute URLs built from the request's host. Behind nginx, pass `proxy_set_header Host $host;`.
+
 ## Tool 0.3.3 (library 0.3.0)
 
 - Web page: examples move into the form as one menu with a Broken/Fixed switch. Choosing one fills the source box and explains the bug (or the fix) in plain words; only "Attack it" runs anything. Five examples on the page, one per kind of bug; the rest stay in `examples/`. After an example run, one line offers the other version. Pressing "Attack it" scrolls to the status.

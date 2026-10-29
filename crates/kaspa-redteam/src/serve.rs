@@ -17,6 +17,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const PAGE: &str = include_str!("web/index.html");
+/// Link-preview card (Open Graph / X), 1200x630.
+const OG_IMAGE: &[u8] = include_bytes!("web/og.png");
 struct Example {
     slug: &'static str,
     title: &'static str,
@@ -131,6 +133,23 @@ fn respond_json(req: tiny_http::Request, status: u16, v: &Value) {
     respond(req, status, "application/json; charset=utf-8", v.to_string());
 }
 
+/// `https://host` the request was made to (plain `http` only for a local address).
+fn origin(req: &tiny_http::Request) -> String {
+    let mut host = String::from("localhost");
+    let mut proto = None;
+    for h in req.headers() {
+        match h.field.as_str().as_str().to_ascii_lowercase().as_str() {
+            "host" => host = h.value.as_str().to_string(),
+            "x-forwarded-proto" => proto = Some(h.value.as_str().to_string()),
+            _ => {}
+        }
+    }
+    let host: String = host.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']')).collect();
+    let local = host.starts_with("localhost") || host.starts_with("127.") || host.starts_with('[');
+    let scheme = proto.filter(|p| p == "http" || p == "https").unwrap_or_else(|| if local { "http".into() } else { "https".into() });
+    format!("{scheme}://{host}")
+}
+
 /// Who is asking: the socket address, or the proxy's header when the request
 /// came through a reverse proxy on this machine.
 fn client_ip(req: &tiny_http::Request) -> IpAddr {
@@ -153,7 +172,16 @@ fn handle(mut req: tiny_http::Request, s: &Shared) {
     let url = req.url().split('?').next().unwrap_or("/").to_string();
     match (req.method(), url.as_str()) {
         (tiny_http::Method::Get, "/") | (tiny_http::Method::Get, "/index.html") => {
-            respond(req, 200, "text/html; charset=utf-8", PAGE)
+            // Link previews need absolute URLs: build them from the host the page was asked for.
+            let page = PAGE.replace("%ORIGIN%", &origin(&req));
+            respond(req, 200, "text/html; charset=utf-8", page)
+        }
+        (tiny_http::Method::Get, "/og.png") => {
+            let header = |k: &str, v: &str| tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).expect("ascii header");
+            let resp = tiny_http::Response::from_data(OG_IMAGE.to_vec())
+                .with_header(header("Content-Type", "image/png"))
+                .with_header(header("Cache-Control", "public, max-age=86400"));
+            let _ = req.respond(resp);
         }
         (tiny_http::Method::Get, "/api/examples") => {
             let list: Vec<Value> = EXAMPLES

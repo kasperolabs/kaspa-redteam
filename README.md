@@ -77,6 +77,7 @@ server {
     client_max_body_size 2m;
     location / {
         proxy_pass http://127.0.0.1:8790;
+        proxy_set_header Host $host;                # link previews use it for absolute URLs
         proxy_set_header X-Real-IP $remote_addr;
         proxy_read_timeout 180s;
     }
@@ -92,6 +93,7 @@ Keep it running with pm2 (`pm2 start /path/to/kaspa-redteam --name redteam-web -
 | `GET /` | the page |
 | `POST /api/scan` | `{ filename, source, args: ["name=value"], baseline, baseline_name }` → `{ report, files }` (`report` is the `--json` report) |
 | `GET /api/library` | the attack library |
+| `GET /og.png` | the link-preview card (Open Graph / X) |
 | `GET /api/examples` | the examples the page offers, broken and fixed, with the bug and the fix in plain words |
 | `GET /api/example` | one vulnerable example contract |
 | `GET /health` | `ok` |
