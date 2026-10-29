@@ -152,3 +152,34 @@ mod tests {
         assert_eq!(lock_values(&s).1, vec![1000]);
     }
 }
+
+/// Every 65-byte push in a script, as the byte offset of its data.
+pub fn sig_push_offsets(script: &[u8]) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < script.len() {
+        let op = script[i];
+        i += 1;
+        let len = match op {
+            0x01..=0x4b => op as usize,
+            0x4c if i < script.len() => {
+                i += 1;
+                script[i - 1] as usize
+            }
+            0x4d if i + 1 < script.len() => {
+                i += 2;
+                u16::from_le_bytes([script[i - 2], script[i - 1]]) as usize
+            }
+            0x4e if i + 3 < script.len() => {
+                i += 4;
+                u32::from_le_bytes([script[i - 4], script[i - 3], script[i - 2], script[i - 1]]) as usize
+            }
+            _ => 0,
+        };
+        if len == 65 && i + 65 <= script.len() {
+            out.push(i);
+        }
+        i += len;
+    }
+    out
+}

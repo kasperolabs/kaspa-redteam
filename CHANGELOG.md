@@ -1,5 +1,10 @@
 # Changelog
 
+## Tool 0.2.3 (library 0.2.0)
+
+- Baseline `keys`: throwaway private keys the harness signed with. A transaction signature one of them made is signed again after every change, so attacks can alter what that key signed over (the seller's own signature in a market sell, for example). Without keys such a path stays outsider-only, as before.
+- Baseline import: a signature on any covenant input, not only a target, now keeps funding coins verbatim.
+
 ## Tool 0.2.2 (library 0.2.0)
 
 - Constructor tuning: values a path's own bound checks reject are replaced by ones that open it, verified by an accepted spend, listed as report notes; `--no-tune` turns it off.

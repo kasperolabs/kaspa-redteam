@@ -72,7 +72,7 @@ Exit codes: `0` clean, `1` findings, `2` error.
 - `note: constructor ... set to ...`: a value the tool tuned so a path could be explored. The findings hold for that value; if your deployment uses a different one, pass it with `--arg`.
 - `note: path ... unexplored`: the path was not attacked. Clean results say nothing about it.
 
-A path the search cannot spend is reported as **unexplored**, never as safe. For those, two ways in: `--arg` values the search could not guess, or a **baseline file**: honest transactions from your own test harness, which the attacks then mutate. That covers covenant families, sibling programs and computed outputs the search will never build on its own. Format and a JavaScript emitter: [BASELINE.md](BASELINE.md).
+A path the search cannot spend is reported as **unexplored**, never as safe. For those, two ways in: `--arg` values the search could not guess, or a **baseline file**: honest transactions from your own test harness, which the attacks then mutate. That covers covenant families, sibling programs and computed outputs the search will never build on its own. Format and a JavaScript emitter: [BASELINE.md](BASELINE.md). A baseline can list the throwaway keys it was signed with (`"keys"`), so the attacks can re-sign after changing a transaction and test what a signing user could get away with.
 
 ### Threat model (Tier 1)
 

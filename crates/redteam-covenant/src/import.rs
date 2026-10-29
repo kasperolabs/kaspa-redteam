@@ -7,11 +7,13 @@
 
 use crate::baseline::{Baseline, PathStatus};
 use crate::contract::Contract;
-use crate::sandbox::{Dest, InputSpec, Judge, OutputSpec, RawInput, SpendPlan, Verdict};
+use crate::sandbox::{Dest, InputSpec, Judge, OutputSpec, RawInput, Resign, SpendPlan, Verdict};
 use crate::script::{self, Token};
 use crate::wallets::KeyRef;
 use anyhow::{Context, Result, anyhow, bail};
-use kaspa_consensus_core::tx::{CovenantBinding, ScriptPublicKey, TransactionId, TransactionOutpoint, UtxoEntry};
+use kaspa_consensus_core::hashing::sighash::{SigHashReusedValuesUnsync, calc_schnorr_signature_hash};
+use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
+use kaspa_consensus_core::tx::{CovenantBinding, PopulatedTransaction, ScriptPublicKey, TransactionId, TransactionOutpoint, UtxoEntry};
 use kaspa_hashes::Hash;
 use serde_json::Value;
 use std::str::FromStr;
@@ -89,6 +91,7 @@ pub fn load(path: &std::path::Path, contract: &Contract, judge: &Judge) -> Resul
     }
     let file_daa = opt_num(&doc, "daaScore")?.unwrap_or(DEFAULT_DAA);
     let file_time = opt_num(&doc, "pastMedianTime")?.unwrap_or(DEFAULT_TIME);
+    let keys = parse_keys(&doc).with_context(|| format!("{}: keys", path.display()))?;
     let txs: Vec<&Value> = match doc.get("transactions") {
         Some(Value::Array(a)) => a.iter().collect(),
         _ if doc.get("tx").is_some() => vec![&doc],
@@ -99,7 +102,7 @@ pub fn load(path: &std::path::Path, contract: &Contract, judge: &Judge) -> Resul
     for (n, item) in txs.iter().enumerate() {
         let label = item.get("path").and_then(|p| p.as_str()).map(String::from).unwrap_or_else(|| format!("tx{n}"));
         let ctx = |e: anyhow::Error| e.context(format!("{}: transaction `{label}`", path.display()));
-        let plan = parse_one(item, file_daa, file_time).map_err(ctx)?;
+        let plan = parse_one(item, file_daa, file_time, &keys, contract, judge).map_err(ctx)?;
         match judge.run(contract, &plan) {
             (Verdict::Accepted { .. }, _) => {}
             (Verdict::Rejected(why), _) => {
@@ -123,7 +126,64 @@ pub fn load(path: &std::path::Path, contract: &Contract, judge: &Judge) -> Resul
     Ok(out)
 }
 
-fn parse_one(item: &Value, file_daa: u64, file_time: u64) -> Result<SpendPlan> {
+/// Throwaway keys the harness signed with (`"keys": ["<64 hex>"]`). Any
+/// transaction signature one of them made is the attacker's to remake.
+fn parse_keys(doc: &Value) -> Result<Vec<secp256k1::Keypair>> {
+    let Some(list) = doc.get("keys") else { return Ok(vec![]) };
+    let list = list.as_array().ok_or_else(|| anyhow!("expected an array of 64-hex private keys"))?;
+    let mut out = Vec::new();
+    for (i, k) in list.iter().enumerate() {
+        let b = hex(k, &format!("keys[{i}]"))?;
+        let sk = secp256k1::SecretKey::from_slice(&b).map_err(|e| anyhow!("keys[{i}]: {e}"))?;
+        out.push(secp256k1::Keypair::from_secret_key(secp256k1::SECP256K1, &sk));
+    }
+    Ok(out)
+}
+
+/// For each input, a signature in its script that one of `keys` made over the
+/// transaction as given.
+fn find_resigns(
+    specs: &[RawInput],
+    plan: &SpendPlan,
+    keys: &[secp256k1::Keypair],
+    contract: &Contract,
+    judge: &Judge,
+) -> Result<Vec<Option<Resign>>> {
+    let mut out = vec![None; specs.len()];
+    if keys.is_empty() {
+        return Ok(out);
+    }
+    let built = judge.build(contract, plan)?;
+    let populated = PopulatedTransaction::new(&built.tx, built.entries.clone());
+    let reused = SigHashReusedValuesUnsync::new();
+    for (i, s) in specs.iter().enumerate() {
+        let sighash = calc_schnorr_signature_hash(&populated, i, SIG_HASH_ALL, &reused);
+        let msg = secp256k1::Message::from_digest_slice(sighash.as_bytes().as_slice()).expect("32-byte digest");
+        'offsets: for at in script::sig_push_offsets(&s.signature_script) {
+            let b = &s.signature_script[at..at + 65];
+            if b[64] != SIG_HASH_ALL.to_u8() {
+                continue;
+            }
+            let Ok(sig) = secp256k1::schnorr::Signature::from_slice(&b[..64]) else { continue };
+            for kp in keys {
+                if secp256k1::SECP256K1.verify_schnorr(&sig, &msg, &kp.x_only_public_key().0).is_ok() {
+                    out[i] = Some(Resign { keypair: *kp, at });
+                    break 'offsets;
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn parse_one(
+    item: &Value,
+    file_daa: u64,
+    file_time: u64,
+    keys: &[secp256k1::Keypair],
+    contract: &Contract,
+    judge: &Judge,
+) -> Result<SpendPlan> {
     let tx = item.get("tx").ok_or_else(|| anyhow!("missing `tx`"))?;
     let utxos =
         item.get("utxos").and_then(|u| u.as_array()).ok_or_else(|| anyhow!("missing `utxos` (one per input)"))?;
@@ -179,17 +239,43 @@ fn parse_one(item: &Value, file_daa: u64, file_time: u64) -> Result<SpendPlan> {
             compute_budget: opt_num(inp, "computeBudget")?.unwrap_or(0) as u16,
             entry,
             target,
+            resign: None,
         });
     }
     if !specs.iter().any(|s| s.target) {
         bail!("no input is a covenant under test; set `targets` to the covenant input indexes");
+    }
+    let raw_outputs = parse_outputs(outputs, &[])?;
+    let lock_time = opt_num(tx, "lockTime")?.unwrap_or(0);
+    let payload = match tx.get("payload") {
+        None | Some(Value::Null) => vec![],
+        Some(p) => hex(p, "payload")?,
+    };
+    let pov_daa = opt_num(item, "daaScore")?.unwrap_or(file_daa);
+    let block_time = opt_num(item, "pastMedianTime")?.unwrap_or(file_time);
+    let as_given = SpendPlan {
+        version,
+        inputs: specs.iter().cloned().map(InputSpec::Raw).collect(),
+        outputs: raw_outputs,
+        lock_time,
+        payload: payload.clone(),
+        pov_daa,
+        block_time,
+    };
+    let resigns = find_resigns(&specs, &as_given, keys, contract, judge)?;
+    for (s, r) in specs.iter_mut().zip(resigns) {
+        if r.is_some() {
+            s.signed = false;
+            s.resign = r;
+        }
     }
 
     // Plain P2PK funding coins become the attacker's own coins, re-signed by
     // the tool, so attacks can change outputs. This is only possible when no
     // covenant input carries a transaction signature: those commit to every
     // outpoint and would break. Then everything stays verbatim.
-    let any_signed_target = specs.iter().any(|s| s.target && s.signed);
+    // A signature the tool can remake (a baseline key made it) does not count.
+    let any_signed_target = specs.iter().any(|s| s.signed && (s.target || !is_plain_p2pk(&s.entry.script_public_key)));
     let mut replaced: Vec<ScriptPublicKey> = Vec::new();
     let mut plan_inputs = Vec::with_capacity(specs.len());
     for s in specs {
@@ -201,6 +287,21 @@ fn parse_one(item: &Value, file_daa: u64, file_time: u64) -> Result<SpendPlan> {
         }
     }
 
+    let plan_outputs = parse_outputs(outputs, &replaced)?;
+
+    Ok(SpendPlan {
+        version,
+        inputs: plan_inputs,
+        outputs: plan_outputs,
+        lock_time,
+        payload,
+        pov_daa,
+        block_time,
+    })
+}
+
+/// Outputs; those paying a `replaced` funding script go to the attacker, who now owns it.
+fn parse_outputs(outputs: &[Value], replaced: &[ScriptPublicKey]) -> Result<Vec<OutputSpec>> {
     let mut plan_outputs = Vec::with_capacity(outputs.len());
     for (i, o) in outputs.iter().enumerate() {
         let w = format!("outputs[{i}]");
@@ -214,23 +315,10 @@ fn parse_one(item: &Value, file_daa: u64, file_time: u64) -> Result<SpendPlan> {
                 hash(c.get("covenantId").ok_or_else(|| anyhow!("{w}.covenant: missing covenantId"))?, &w)?,
             )),
         };
-        // Change back to a funding coin we replaced goes to the attacker, who now owns it.
         let to = if replaced.contains(&s) { Dest::Key(KeyRef::Attacker) } else { Dest::Raw(s) };
         plan_outputs.push(OutputSpec { value, to, covenant });
     }
-
-    Ok(SpendPlan {
-        version,
-        inputs: plan_inputs,
-        outputs: plan_outputs,
-        lock_time: opt_num(tx, "lockTime")?.unwrap_or(0),
-        payload: match tx.get("payload") {
-            None | Some(Value::Null) => vec![],
-            Some(p) => hex(p, "payload")?,
-        },
-        pov_daa: opt_num(item, "daaScore")?.unwrap_or(file_daa),
-        block_time: opt_num(item, "pastMedianTime")?.unwrap_or(file_time),
-    })
+    Ok(plan_outputs)
 }
 
 /// Writes the honest spends the search found as a baseline file: a working

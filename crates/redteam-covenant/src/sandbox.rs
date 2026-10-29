@@ -97,8 +97,22 @@ pub struct RawInput {
     pub entry: UtxoEntry,
     /// Part of the covenant under test (attacks may duplicate or move it).
     pub target: bool,
-    /// Its signature script carries what looks like a transaction signature.
+    /// Its signature script carries a transaction signature the tool cannot
+    /// remake (no key for it in the baseline).
     pub signed: bool,
+    /// A transaction signature inside the signature script that a baseline
+    /// key made: the tool signs it again after every change.
+    #[serde(skip)]
+    pub resign: Option<Resign>,
+}
+
+/// Where a re-signable signature sits, and the key that makes it.
+#[derive(Debug, Clone)]
+pub struct Resign {
+    pub keypair: secp256k1::Keypair,
+    /// Byte offset of the 64-byte Schnorr signature inside the signature script
+    /// (the sighash-type byte follows it).
+    pub at: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -416,7 +430,19 @@ impl Judge {
             let populated = PopulatedTransaction::new(&tx, entries.clone());
             for (i, spec) in plan.inputs.iter().enumerate() {
                 let script = match spec {
-                    InputSpec::Raw(_) => None,
+                    InputSpec::Raw(r) => match &r.resign {
+                        None => None,
+                        Some(rs) => {
+                            let sighash = calc_schnorr_signature_hash(&populated, i, SIG_HASH_ALL, &reused);
+                            let msg = secp256k1::Message::from_digest_slice(sighash.as_bytes().as_slice())
+                                .expect("32-byte digest");
+                            let sig = rs.keypair.sign_schnorr(msg);
+                            let mut s = r.signature_script.clone();
+                            s[rs.at..rs.at + 64].copy_from_slice(sig.as_ref());
+                            s[rs.at + 64] = SIG_HASH_ALL.to_u8();
+                            Some(s)
+                        }
+                    },
                     InputSpec::StandIn { .. } => Some(push_data(redeems[i].as_ref().expect("stand-in redeem"))?),
                     _ => {
                         let sighash = calc_schnorr_signature_hash(&populated, i, SIG_HASH_ALL, &reused);
