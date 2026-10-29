@@ -6,6 +6,8 @@ Attack your Kaspa covenant before mainnet does.
 kaspa-redteam vault.sil
 ```
 
+**Try it in the browser, nothing to install: [redteam.kasperolabs.com](https://redteam.kasperolabs.com)** (drop a `.sil` file, get the report).
+
 One command, no node, no setup. The tool compiles your SilverScript in process, finds an honest spend for every path, then throws a library of known attacks at it. Every hostile transaction is signed for real and judged by rusty-kaspa's own consensus validator. A finding is reported only when consensus **accepted** a transaction the attack expected it to reject, and it ships with the exact transaction so anyone can replay it.
 
 ```
