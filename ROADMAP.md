@@ -15,9 +15,13 @@
 - Exact-deposit coin sizes; signer ranking from `checkSig(param, key)` in the source.
 - Baseline import and export (BASELINE.md).
 
+## v0.2.2
+
+- Constructor tuning from the bounds each entry checks, verified by search.
+
 ## Next, in order
 
-1. **Wider spend search.** Array and struct arguments; covenant declarations (`#[covenant]` continuation outputs and covenant IDs); constructor values inferred from bounds the script checks (`require(x <= BOUND)`).
+1. **Wider spend search.** Array and struct arguments; covenant declarations (`#[covenant]` continuation outputs and covenant IDs).
 2. **Remaining Tier 1:** ST-01..03 (state rollback and replay, malformed and maximum-size state; states are now explored, so these come first), SIG-03 (signature reused across paths), OUT-04 (reorder), TL-01 (lock off-by-one, using the bisected boundary), MS-01/02 (mass limit and dust outputs, judged against relay policy as well as consensus), LIV-01 (state with no valid spend).
 3. **GitHub Action** that runs on every `.sil` in a repo, comments the report on the PR, fails on findings.
 4. **Tier 2 spec** (`redteam.yaml`): roles (who may be paid what), invariants, property search and shrinking, the rest of the oracle pack (ORC-01..03, 05, 06: stale, replayed, extreme, missing and mismatched readings).

@@ -73,7 +73,32 @@ pub fn registry() -> Vec<&'static dyn CovenantAttack> {
 pub fn run(contract: &Contract, only: &[String], imported: Vec<PathStatus>) -> RunReport {
     let started = Instant::now();
     let judge = Judge::new();
-    let mut paths = baseline::search_all(contract, &judge);
+    let paths = baseline::search_all(contract, &judge);
+    run_paths_timed(contract, only, paths, imported, vec![], started)
+}
+
+/// Runs the attacks on paths already searched (by `tune::tune`, say).
+/// `extra_notes` are shown first in the report.
+pub fn run_paths(
+    contract: &Contract,
+    only: &[String],
+    paths: Vec<PathStatus>,
+    imported: Vec<PathStatus>,
+    extra_notes: Vec<String>,
+) -> RunReport {
+    run_paths_timed(contract, only, paths, imported, extra_notes, Instant::now())
+}
+
+/// As `run_paths`, with the report's clock started at `started` (before the search).
+pub fn run_paths_timed(
+    contract: &Contract,
+    only: &[String],
+    mut paths: Vec<PathStatus>,
+    imported: Vec<PathStatus>,
+    extra_notes: Vec<String>,
+    started: Instant,
+) -> RunReport {
+    let judge = Judge::new();
     let imported_count = imported.len();
     paths.extend(imported);
     let cx = AttackCx { contract, judge: &judge, paths: &paths, compromised: RefCell::new(BTreeSet::new()) };
@@ -102,7 +127,7 @@ pub fn run(contract: &Contract, only: &[String], imported: Vec<PathStatus>) -> R
         });
     }
 
-    let mut notes = Vec::new();
+    let mut notes = extra_notes;
     let mut noted = BTreeSet::new();
     for p in &paths {
         let explored_somewhere = paths.iter().any(|q| q.name == p.name && q.baseline.is_some());

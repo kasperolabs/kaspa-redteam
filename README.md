@@ -37,6 +37,7 @@ kaspa-redteam vault.sil                        # attack it
 kaspa-redteam vault.sil -v                     # every attack + the spend map
 kaspa-redteam vault.sil --arg owner=@alice     # choose constructor values
 kaspa-redteam vault.sil --arg cap=500000000    #   ints, 0xhex, true/false, @party
+kaspa-redteam vault.sil --no-tune              # keep default constructor values as they are
 kaspa-redteam vault.sil --only sig,OUT-02      # packs or attack IDs
 kaspa-redteam vault.sil --json                 # for CI
 kaspa-redteam vault.sil --badge                # clean run: redteam-badge.svg + summary
@@ -45,7 +46,10 @@ kaspa-redteam export vault.sil > example.json  # the honest spends found, as a b
 kaspa-redteam replay findings/*.json           # re-judge saved findings
 kaspa-redteam list                             # the attack library
 kaspa-redteam node --kaspad ./kaspad           # node and mining packs (local simnet)
+kaspa-redteam node --kaspad ./kaspad --nodes 2 --keep   # two linked nodes, keep their data dirs
 ```
+
+Common flags: `--out DIR` (where finding files go, default `findings/`), `--no-color`, and `--only`, `--json`, `-v`, `--badge` work on `node` runs too. `kaspa-redteam --help` and `kaspa-redteam <command> --help` list everything.
 
 Exit codes: `0` clean, `1` findings, `2` error.
 
@@ -57,8 +61,16 @@ Exit codes: `0` clean, `1` findings, `2` error.
    - **Signed readings** (`checkMsgSig`): messages are assembled from what the script compares them with (4-byte tags, `byte[32]` ids, required lengths, constructor values in trailing fields) and signed by the party the source names.
    - **Stateful covenants** (`validateOutputState`): successor outputs carry re-encoded state, and every new state an accepted spend reaches is explored in turn, so paths that only open later (`claim` after `approve`) get attacked too.
    - **Sibling coins**: a stand-in coin can sit next to the covenant, for paths that require another covenant's coin as an input.
-4. **Attack.** Each attack mutates those honest spends: wrong signer, garbage signature, forged reading, reused secret, redirected or reduced outputs, a second covenant coin, an attacker coin in front, value left as fee.
-5. **Judge.** `TransactionValidator` from `kaspa-consensus` 2.1.0 (isolation rules, amounts, sequence locks, storage-mass commitment, covenant context, every input script) plus the lock-time finality rule. Mainnet consensus constants; no network.
+4. **Tuning.** If a path stays unexplored, the tool reads the comparisons that entry makes on integer constructor parameters (`require(cancelFee >= MIN_OUT && cancelFee <= maxFare)`), tries the values they compare against (`int constant`s, literals, other parameters), and keeps one only when it opens the path without closing another. Every tuned value is listed in the report as a `note: constructor ... set to ...` line; `--arg` overrides it and `--no-tune` turns tuning off.
+5. **Attack.** Each attack mutates those honest spends: wrong signer, garbage signature, forged reading, reused secret, redirected or reduced outputs, a second covenant coin, an attacker coin in front, value left as fee.
+6. **Judge.** `TransactionValidator` from `kaspa-consensus` 2.1.0 (isolation rules, amounts, sequence locks, storage-mass commitment, covenant context, every input script) plus the lock-time finality rule. Mainnet consensus constants; no network.
+
+### Reading the report
+
+- `N attacks run / survived / skipped`: an attack is skipped when no explored path is one it applies to (signature attacks on a contract with no signed path, say). Skipped is neither a pass nor a fail.
+- `-v` adds the **spend map**: for every path, who can spend it, where the honest spend paid, and the earliest lock value consensus accepted. Read it first; it is the tool's understanding of your contract.
+- `note: constructor ... set to ...`: a value the tool tuned so a path could be explored. The findings hold for that value; if your deployment uses a different one, pass it with `--arg`.
+- `note: path ... unexplored`: the path was not attacked. Clean results say nothing about it.
 
 A path the search cannot spend is reported as **unexplored**, never as safe. For those, two ways in: `--arg` values the search could not guess, or a **baseline file**: honest transactions from your own test harness, which the attacks then mutate. That covers covenant families, sibling programs and computed outputs the search will never build on its own. Format and a JavaScript emitter: [BASELINE.md](BASELINE.md).
 

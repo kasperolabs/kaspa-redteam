@@ -22,8 +22,10 @@ use silverscript_abi::{ArtifactValue, TypeArtifact};
 
 const MAX_TRIES_PER_PATH: usize = 25_000;
 const MAX_ARG_COMBOS: usize = 256;
-/// Output shapes every argument combination gets before the long tail.
-const FIRST_PASS_SHAPES: usize = 150;
+/// First pass: this many top-ranked argument combinations, each against
+/// this many of the most common output shapes, before the full search.
+const FIRST_PASS_COMBOS: usize = 16;
+const FIRST_PASS_SHAPES: usize = 100;
 const MAX_STATES: usize = 4;
 const MAX_SUCCESSORS: usize = 12;
 
@@ -132,6 +134,17 @@ pub fn search_all(contract: &Contract, judge: &Judge) -> Vec<PathStatus> {
 }
 
 pub fn search_path(contract: &Contract, judge: &Judge, entry_name: &str, state: Option<&StateValues>) -> PathStatus {
+    search_path_budget(contract, judge, entry_name, state, MAX_TRIES_PER_PATH)
+}
+
+/// `search_path` with a custom try budget (smaller when tuning constructor values).
+pub fn search_path_budget(
+    contract: &Contract,
+    judge: &Judge,
+    entry_name: &str,
+    state: Option<&StateValues>,
+    budget: usize,
+) -> PathStatus {
     let entry = contract.entry(entry_name).expect("entry exists");
     let id = match state {
         None => entry_name.to_string(),
@@ -201,15 +214,23 @@ pub fn search_path(contract: &Contract, judge: &Judge, entry_name: &str, state: 
     // rest of the shapes. Within a pass: arguments (best-ranked first), coin
     // size and layout, output shapes, lock values.
     for pass in 0..2 {
-        for (args, secrets) in &combos {
+        for (ci, (args, secrets)) in combos.iter().enumerate() {
+            if pass == 0 && ci >= FIRST_PASS_COMBOS {
+                break;
+            }
             for (cov_value, extra, cov_pos, shapes) in &prepared {
                 let cut = shapes.len().min(FIRST_PASS_SHAPES);
-                let slice = if pass == 0 { &shapes[..cut] } else { &shapes[cut..] };
+                // Pass 1 skips only what pass 0 already tried.
+                let slice = match (pass, ci < FIRST_PASS_COMBOS) {
+                    (0, _) => &shapes[..cut],
+                    (_, true) => &shapes[cut..],
+                    _ => &shapes[..],
+                };
                 for outs in slice {
                     for t in &timings {
-                        if status.tries >= MAX_TRIES_PER_PATH {
+                        if status.tries >= budget {
                             status.unexplored_reason = Some(format!(
-                                "no accepted spend in {MAX_TRIES_PER_PATH} tries; pass --arg values or import a baseline (--baseline)"
+                                "no accepted spend in {budget} tries; pass --arg values or import a baseline (--baseline)"
                             ));
                             return status;
                         }

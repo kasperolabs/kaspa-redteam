@@ -39,6 +39,9 @@ struct ScanArgs {
     /// Honest transactions to attack, from your own harness (format: BASELINE.md). Repeatable.
     #[arg(long = "baseline", value_name = "FILE")]
     baselines: Vec<PathBuf>,
+    /// Keep the default constructor values even when they leave paths unexplored
+    #[arg(long)]
+    no_tune: bool,
     #[command(flatten)]
     common: Common,
 }
@@ -60,6 +63,7 @@ struct Common {
     /// Write redteam-badge.svg and redteam-summary.json on a clean run
     #[arg(long)]
     badge: bool,
+    /// Plain text output (also when NO_COLOR is set or output is not a terminal)
     #[arg(long)]
     no_color: bool,
 }
@@ -149,10 +153,19 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
     }
     let short =
         |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.display().to_string());
-    let contract = match &a.file {
+    let started = std::time::Instant::now();
+    let judge = redteam_covenant::sandbox::Judge::new();
+    let (contract, paths, notes) = match &a.file {
         Some(file) => {
             let source = std::fs::read_to_string(file).with_context(|| format!("read {}", file.display()))?;
-            redteam_covenant::contract::Contract::load(&short(file), &source, &overrides)?
+            if a.no_tune {
+                let c = redteam_covenant::contract::Contract::load(&short(file), &source, &overrides)?;
+                let p = redteam_covenant::baseline::search_all(&c, &judge);
+                (c, p, vec![])
+            } else {
+                let t = redteam_covenant::tune::tune(&short(file), &source, &overrides, &judge)?;
+                (t.contract, t.paths, t.notes)
+            }
         }
         None => {
             if !overrides.is_empty() {
@@ -163,15 +176,14 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
                 raw.extend(std::fs::read(b).with_context(|| format!("read {}", b.display()))?);
             }
             let names: Vec<String> = a.baselines.iter().map(short).collect();
-            redteam_covenant::contract::Contract::for_import(&names.join(" + "), &raw)
+            (redteam_covenant::contract::Contract::for_import(&names.join(" + "), &raw), vec![], vec![])
         }
     };
-    let judge = redteam_covenant::sandbox::Judge::new();
     let mut imported = Vec::new();
     for b in &a.baselines {
         imported.extend(redteam_covenant::import::load(b, &contract, &judge)?);
     }
-    let report = redteam_covenant::run(&contract, &a.common.only, imported);
+    let report = redteam_covenant::run_paths_timed(&contract, &a.common.only, paths, imported, notes, started);
     finish(report, &a.common)
 }
 

@@ -15,13 +15,14 @@ pub mod replay;
 pub mod runner;
 pub mod sandbox;
 pub mod script;
+pub mod tune;
 pub mod wallets;
 
 use baseline::PathStatus;
 use contract::Contract;
 use sandbox::{Dest, SOMPI_PER_KAS};
 
-pub use runner::{AttackCx, Attempt, CovenantAttack, CovenantPlugin, registry, run};
+pub use runner::{AttackCx, Attempt, CovenantAttack, CovenantPlugin, registry, run, run_paths, run_paths_timed};
 
 pub fn kas(sompi: u64) -> String {
     let whole = sompi / SOMPI_PER_KAS;

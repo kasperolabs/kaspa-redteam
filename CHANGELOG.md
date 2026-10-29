@@ -1,3 +1,11 @@
+# Changelog
+
+## Tool 0.2.2 (library 0.2.0)
+
+- Constructor tuning: values a path's own bound checks reject are replaced by ones that open it, verified by an accepted spend, listed as report notes; `--no-tune` turns it off.
+- Search: each entry's own reading message ranked first; a bounded first pass so one wrong guess cannot use up the budget.
+- Report time now includes the search.
+
 # Attack library changelog
 
 ## 0.2.0
