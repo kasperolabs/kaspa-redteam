@@ -22,6 +22,8 @@ use silverscript_abi::{ArtifactValue, TypeArtifact};
 
 const MAX_TRIES_PER_PATH: usize = 25_000;
 const MAX_ARG_COMBOS: usize = 256;
+/// Output shapes every argument combination gets before the long tail.
+const FIRST_PASS_SHAPES: usize = 150;
 const MAX_STATES: usize = 4;
 const MAX_SUCCESSORS: usize = 12;
 
@@ -194,40 +196,46 @@ pub fn search_path(contract: &Contract, judge: &Judge, entry_name: &str, state: 
         })
         .collect();
 
-    // Arguments outermost (best-ranked first), then coin size and layout, then
-    // output shapes, then lock values.
-    for (args, secrets) in &combos {
-        for (cov_value, extra, cov_pos, shapes) in &prepared {
-            for outs in shapes {
-                for t in &timings {
-                    if status.tries >= MAX_TRIES_PER_PATH {
-                        status.unexplored_reason = Some(format!(
-                            "no accepted spend in {MAX_TRIES_PER_PATH} tries; pass --arg values or import a baseline (--baseline)"
-                        ));
-                        return status;
-                    }
-                    status.tries += 1;
-                    let cov = InputSpec::Covenant {
-                        entry: entry_name.into(),
-                        args: args.clone(),
-                        value: *cov_value,
-                        sequence: t.sequence,
-                        state: state.cloned(),
-                    };
-                    let mut inputs = (*extra).clone();
-                    inputs.insert(*cov_pos, cov);
-                    let plan = SpendPlan::simple(inputs, outs.clone(), t.lock_time, pov_daa, block_time);
-                    if judge.run(contract, &plan).0.accepted() {
-                        let lock = if t.lock_time > 0 {
-                            Some(bisect_lock(contract, judge, &plan, "lock_time", t.lock_time))
-                        } else if t.sequence > 0 {
-                            Some(bisect_lock(contract, judge, &plan, "sequence", t.sequence))
-                        } else {
-                            None
+    // Two passes so one wrong guess cannot eat the whole budget: first every
+    // argument combination against the most common output shapes, then the
+    // rest of the shapes. Within a pass: arguments (best-ranked first), coin
+    // size and layout, output shapes, lock values.
+    for pass in 0..2 {
+        for (args, secrets) in &combos {
+            for (cov_value, extra, cov_pos, shapes) in &prepared {
+                let cut = shapes.len().min(FIRST_PASS_SHAPES);
+                let slice = if pass == 0 { &shapes[..cut] } else { &shapes[cut..] };
+                for outs in slice {
+                    for t in &timings {
+                        if status.tries >= MAX_TRIES_PER_PATH {
+                            status.unexplored_reason = Some(format!(
+                                "no accepted spend in {MAX_TRIES_PER_PATH} tries; pass --arg values or import a baseline (--baseline)"
+                            ));
+                            return status;
+                        }
+                        status.tries += 1;
+                        let cov = InputSpec::Covenant {
+                            entry: entry_name.into(),
+                            args: args.clone(),
+                            value: *cov_value,
+                            sequence: t.sequence,
+                            state: state.cloned(),
                         };
-                        let signers = plan.signers();
-                        status.baseline = Some(Baseline { plan, signers, secrets: secrets.clone(), lock });
-                        return status;
+                        let mut inputs = (*extra).clone();
+                        inputs.insert(*cov_pos, cov);
+                        let plan = SpendPlan::simple(inputs, outs.clone(), t.lock_time, pov_daa, block_time);
+                        if judge.run(contract, &plan).0.accepted() {
+                            let lock = if t.lock_time > 0 {
+                                Some(bisect_lock(contract, judge, &plan, "lock_time", t.lock_time))
+                            } else if t.sequence > 0 {
+                                Some(bisect_lock(contract, judge, &plan, "sequence", t.sequence))
+                            } else {
+                                None
+                            };
+                            let signers = plan.signers();
+                            status.baseline = Some(Baseline { plan, signers, secrets: secrets.clone(), lock });
+                            return status;
+                        }
                     }
                 }
             }

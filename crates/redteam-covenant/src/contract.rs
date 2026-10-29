@@ -468,36 +468,44 @@ fn message_candidates(bytecode: &[u8], dispatch_tags: &[Vec<u8>], v32s: &[Vec<u8
     lengths.truncate(8);
     let mut ids: Vec<Vec<u8>> = v32s.iter().take(4).cloned().collect();
     ids.push(vec![]);
-    let mut out: Vec<Vec<u8>> = Vec::new();
-    let mut add = |m: Vec<u8>| {
-        if !m.is_empty() && !out.contains(&m) {
-            out.push(m);
-        }
-    };
+    // Rank: (0) tag + id at a length the script requires, (1) tag + id
+    // filled out to a required length, (2) everything else. A contract with
+    // several entries has several tags; ranking keeps each entry's most
+    // likely message near the front instead of behind another tag's variants.
+    let mut ranked: Vec<(u8, Vec<u8>)> = Vec::new();
     let tag_opts: Vec<Vec<u8>> = if tags.is_empty() { vec![vec![]] } else { tags };
     for tag in &tag_opts {
         for id in &ids {
             let mut base = tag.clone();
             base.extend_from_slice(id);
+            let exact = lengths.contains(&base.len());
+            ranked.push((if exact && !id.is_empty() { 0 } else { 2 }, base.clone()));
             for l in &lengths {
                 if *l > base.len() {
+                    let prio = if id.is_empty() { 2 } else { 1 };
                     let mut m = base.clone();
                     m.resize(*l, 0);
-                    add(m);
+                    ranked.push((prio, m));
                     // A trailing 8-byte field may have to equal a constructor value.
                     if *l == base.len() + 8 {
                         for n in ints.iter().take(4) {
                             let mut m = base.clone();
                             m.extend_from_slice(&n.to_le_bytes());
-                            add(m);
+                            ranked.push((prio, m));
                         }
                     }
                 }
             }
-            add(base);
         }
     }
-    out.truncate(40);
+    ranked.sort_by_key(|(p, _)| *p);
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    for (_, m) in ranked {
+        if !m.is_empty() && !out.contains(&m) {
+            out.push(m);
+        }
+    }
+    out.truncate(48);
     out
 }
 
