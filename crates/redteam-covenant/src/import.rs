@@ -13,7 +13,9 @@ use crate::wallets::KeyRef;
 use anyhow::{Context, Result, anyhow, bail};
 use kaspa_consensus_core::hashing::sighash::{SigHashReusedValuesUnsync, calc_schnorr_signature_hash};
 use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
-use kaspa_consensus_core::tx::{CovenantBinding, PopulatedTransaction, ScriptPublicKey, TransactionId, TransactionOutpoint, UtxoEntry};
+use kaspa_consensus_core::tx::{
+    CovenantBinding, PopulatedTransaction, ScriptPublicKey, TransactionId, TransactionOutpoint, UtxoEntry,
+};
 use kaspa_hashes::Hash;
 use serde_json::Value;
 use std::str::FromStr;
@@ -79,9 +81,9 @@ fn is_plain_p2pk(spk: &ScriptPublicKey) -> bool {
 /// (A 64-byte push is not counted: KCC-20 transfer arguments, for one, pack two
 /// 32-byte fields into exactly that.)
 fn carries_signature(sig_script: &[u8]) -> bool {
-    script::tokenize(sig_script)
-        .iter()
-        .any(|t| matches!(t, Token::Push(b) if b.len() == 65 && matches!(b[64], 0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83)))
+    script::tokenize(sig_script).iter().any(
+        |t| matches!(t, Token::Push(b) if b.len() == 65 && matches!(b[64], 0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83)),
+    )
 }
 
 /// Reads a baseline file into paths ready to attack. The `contract` gives
@@ -309,15 +311,7 @@ fn parse_one(
 
     let plan_outputs = parse_outputs(outputs, &replaced, &own)?;
 
-    Ok(SpendPlan {
-        version,
-        inputs: plan_inputs,
-        outputs: plan_outputs,
-        lock_time,
-        payload,
-        pov_daa,
-        block_time,
-    })
+    Ok(SpendPlan { version, inputs: plan_inputs, outputs: plan_outputs, lock_time, payload, pov_daa, block_time })
 }
 
 /// Outputs; those paying a `replaced` funding script go to the attacker, who now owns it.

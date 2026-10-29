@@ -1,5 +1,15 @@
 # Changelog
 
+## Tool 0.3.0 (library 0.3.0)
+
+- Covenant families from the `.sil` alone: sandbox coins carry a covenant id and successor outputs are bound to it (version 1 transactions); `struct` and struct-array arguments are built from the successor outputs (or, for `prev...` parameters, the covenant inputs); a signature can sit inside a `byte[]` witness after a path byte; delegate entries are searched as a second coin next to an explored leader; a `byte[32] ...template` constructor value becomes the program's own template hash.
+- Defaults: constructor ints used as `for` loop bounds get 3; byte selectors (`...scheme`, `...type`) get 0; `byte[32]` values used or named as keys (`pubkey(owner)`, `genesisPk`) get a party key.
+- Tuning also flips `bool` constructor flags when the default closes a path (`require(!initialized)`).
+- Successor search leaves room for two-field state changes, and tries doubling an amount (two coins merged).
+- Rejections name the failing input (`input 1: signature invalid`).
+- Paths that may need another program's coin say so in their unexplored note.
+- ST-01: rewrite the recorded owner of the next state. New `state` pack, fixtures included.
+
 ## Tool 0.2.5 (library 0.2.0)
 
 - `kaspa-redteam serve`: a web page where anyone drops a `.sil` file (plus optional constructor values or a baseline file) and gets the report, the spend map and downloadable repro files. Each scan runs as its own child process in a temporary folder, with a time limit, a 2 GiB memory limit, one scan per visitor and a cap on scans at once; the folder is deleted afterwards.
@@ -22,6 +32,10 @@
 - Report time now includes the search.
 
 # Attack library changelog
+
+## 0.3.0
+
+- ST-01: anyone may spend a coin whose next state records an owner key, and write their own key there.
 
 ## 0.2.0
 

@@ -95,11 +95,9 @@ fn handle(mut req: tiny_http::Request, s: &Shared) {
         (tiny_http::Method::Get, "/") | (tiny_http::Method::Get, "/index.html") => {
             respond(req, 200, "text/html; charset=utf-8", PAGE)
         }
-        (tiny_http::Method::Get, "/api/example") => respond_json(
-            req,
-            200,
-            &json!({ "filename": "out03-example.sil", "source": EXAMPLE }),
-        ),
+        (tiny_http::Method::Get, "/api/example") => {
+            respond_json(req, 200, &json!({ "filename": "out03-example.sil", "source": EXAMPLE }))
+        }
         (tiny_http::Method::Get, "/api/library") => {
             let mut rows: Vec<&'static redteam_core::AttackMeta> =
                 redteam_covenant::registry().iter().map(|a| a.meta()).collect();
@@ -127,11 +125,19 @@ fn handle(mut req: tiny_http::Request, s: &Shared) {
                 let mut running = s.running.lock().unwrap();
                 if running.contains(&ip) {
                     drop(running);
-                    return respond_json(req, 429, &json!({ "error": "You already have a scan running. Wait for it to finish." }));
+                    return respond_json(
+                        req,
+                        429,
+                        &json!({ "error": "You already have a scan running. Wait for it to finish." }),
+                    );
                 }
                 if running.len() >= s.opts.jobs {
                     drop(running);
-                    return respond_json(req, 503, &json!({ "error": "Every scanner is busy right now. Try again in a minute." }));
+                    return respond_json(
+                        req,
+                        503,
+                        &json!({ "error": "Every scanner is busy right now. Try again in a minute." }),
+                    );
                 }
                 running.push(ip);
             }
@@ -267,7 +273,8 @@ fn scan(body: &[u8], s: &Shared) -> Result<Value> {
     // Finding files, for download; paths inside them point at the temp folder, so show bare names.
     let mut files = Vec::new();
     if let Ok(rd) = std::fs::read_dir(dir.join("findings")) {
-        let mut names: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        let mut names: Vec<_> =
+            rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect();
         names.sort();
         for name in names {
             let content = std::fs::read_to_string(dir.join("findings").join(&name)).unwrap_or_default();

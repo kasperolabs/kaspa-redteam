@@ -81,6 +81,8 @@ server {
 }
 ```
 
+Behind Cloudflare (orange-cloud proxy): pass the visitor's real address with `proxy_set_header X-Real-IP $http_cf_connecting_ip;` instead, or every visitor looks like a Cloudflare server and they block each other's scans. Cloudflare also gives up on a request after 100 seconds on its free plan, so run `serve` with `--timeout 90`.
+
 Keep it running with pm2 (`pm2 start /path/to/kaspa-redteam --name redteam-web -- serve --port 8790`) or a systemd unit. After pulling a new version and rebuilding, restart it so it serves the new binary.
 
 | Route | What |
@@ -99,6 +101,7 @@ Keep it running with pm2 (`pm2 start /path/to/kaspa-redteam --name redteam-web -
    - **Signed readings** (`checkMsgSig`): messages are assembled from what the script compares them with (4-byte tags, `byte[32]` ids, required lengths, constructor values in trailing fields) and signed by the party the source names.
    - **Stateful covenants** (`validateOutputState`): successor outputs carry re-encoded state, and every new state an accepted spend reaches is explored in turn, so paths that only open later (`claim` after `approve`) get attacked too.
    - **Sibling coins**: a stand-in coin can sit next to the covenant, for paths that require another covenant's coin as an input.
+   - **Covenant families** (KCC-20 and anything else that reads `OpInputCovenantId`, `OpCovInputCount`, `OpAuthOutputCount`): sandbox coins carry a covenant id, successor outputs are bound to it (transaction version 1), state-shaped arguments (`KCC20State[] next_states`, `State newState`) are filled from the successor outputs they must match, a signature can sit inside a `byte[]` witness (`0x00 ‖ sig`), and delegate entries are tried as a second coin beside an explored leader. A `byte[32] ...template` constructor value is set to the program's own template hash. Constructor ints used as loop bounds get small values, and `bool` flags are flipped when the default closes a path.
 4. **Tuning.** If a path stays unexplored, the tool reads the comparisons that entry makes on integer constructor parameters (`require(cancelFee >= MIN_OUT && cancelFee <= maxFare)`), tries the values they compare against (`int constant`s, literals, other parameters), and keeps one only when it opens the path without closing another. Every tuned value is listed in the report as a `note: constructor ... set to ...` line; `--arg` overrides it and `--no-tune` turns tuning off.
 5. **Attack.** Each attack mutates those honest spends: wrong signer, garbage signature, forged reading, reused secret, redirected or reduced outputs, a second covenant coin, an attacker coin in front, value left as fee.
 6. **Judge.** `TransactionValidator` from `kaspa-consensus` 2.1.0 (isolation rules, amounts, sequence locks, storage-mass commitment, covenant context, every input script) plus the lock-time finality rule. Mainnet consensus constants; no network.
@@ -110,18 +113,19 @@ Keep it running with pm2 (`pm2 start /path/to/kaspa-redteam --name redteam-web -
 - `note: constructor ... set to ...`: a value the tool tuned so a path could be explored. The findings hold for that value; if your deployment uses a different one, pass it with `--arg`.
 - `note: path ... unexplored`: the path was not attacked. Clean results say nothing about it.
 
-A path the search cannot spend is reported as **unexplored**, never as safe. For those, two ways in: `--arg` values the search could not guess, or a **baseline file**: honest transactions from your own test harness, which the attacks then mutate. That covers covenant families, sibling programs and computed outputs the search will never build on its own. Format and a JavaScript emitter: [BASELINE.md](BASELINE.md). A baseline can list the throwaway keys it was signed with (`"keys"`), so the attacks can re-sign after changing a transaction and test what a signing user could get away with.
+A path the search cannot spend is reported as **unexplored**, never as safe. For those, two ways in: `--arg` values the search could not guess, or a **baseline file**: honest transactions from your own test harness, which the attacks then mutate. That covers what the search cannot build from one file: another program's coins (a market that only accepts a coin of a pinned KCC-20 template), states tied together by real arithmetic, genesis transactions. Format and a JavaScript emitter: [BASELINE.md](BASELINE.md). A baseline can list the throwaway keys it was signed with (`"keys"`), so the attacks can re-sign after changing a transaction and test what a signing user could get away with.
 
 ### Threat model (Tier 1)
 
 The attacker holds only their own key, reads the chain and the mempool (so a secret revealed by a pending claim is public), and can build any transaction. An insider abusing their own signature (a payee taking more than their share) needs to know the roles; that is Tier 2.
 
-## Attack library v0.2.0
+## Attack library v0.3.0
 
 | ID | Pack | Attack | Catches |
 | --- | --- | --- | --- |
 | SIG-01 | sig | Invalid signature on a signed path | `checkSig` evaluated but not required |
 | SIG-02 | sig | Attacker's own key and signature | Key taken from the spender, not the constructor |
+| ST-01 | state | Attacker's key written into the next state | Owner recorded in state, but anyone may move the coin |
 | SEC-01 | secrets | Front-run a revealed secret or reading | Hash lock or signed reading with no spender signature and no fixed recipient |
 | ORC-04 | oracle | Reading signed by the attacker's own key | Oracle or conductor key not pinned |
 | OUT-01 | outputs | Same value, attacker's script | Recipient not pinned |
@@ -135,7 +139,7 @@ The attacker holds only their own key, reads the chain and the mempool (so a sec
 | NODE-02 | mempool | Double-spend a mempool coin | Conflicts admitted without RBF |
 | NODE-03 | mempool | Outputs worth more than inputs | Value created in relay |
 
-Planned next (see ROADMAP.md): ST-01..03 state packs (now that states are explored), AR-01/02 arithmetic, TL-01 lock boundaries, MS-01/02 mass and dust, LIV-01 stuck funds, the rest of the oracle pack, KCC-20 pack, and node liveness/flooding packs.
+Planned next (see ROADMAP.md): ST-02/03 state packs, AR-01/02 arithmetic, TL-01 lock boundaries, MS-01/02 mass and dust, LIV-01 stuck funds, the rest of the oracle pack, KCC-20 pack, and node liveness/flooding packs.
 
 ## Node and mining engine
 

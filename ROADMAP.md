@@ -7,7 +7,7 @@
 - Node engine: simnet harness, mainnet guard, MINE-01, NODE-01..03.
 - Corpus: Kaspero Labs covenants (MinerDrip v1/v2, Pledge v3, ClaimTicket, DamageDeposit).
 
-## v0.2 (this release)
+## v0.2
 
 - Data-signature paths, ORC-04, SEC-01 extended to readings.
 - Stateful covenants: successor outputs, breadth-first state exploration.
@@ -19,10 +19,19 @@
 
 - Constructor tuning from the bounds each entry checks, verified by search.
 
+## v0.2.3 to v0.2.5
+
+- Baseline keys (`keys`, re-signed signatures) and own outputs (`own`); `serve`, the web page.
+
+## v0.3 (this release)
+
+- Covenant families: covenant ids and bound successor outputs, struct and struct-array arguments filled from the transaction, signatures inside `byte[]` witnesses, delegate entries beside a leader, own template hash, loop-bound and flag defaults. The KCC-20 reference program's `transfer` and `transfer_delegator` are now explored and attacked from the `.sil` alone.
+- ST-01 (rewrite the recorded owner of the next state).
+
 ## Next, in order
 
-1. **Wider spend search.** Array and struct arguments; covenant declarations (`#[covenant]` continuation outputs and covenant IDs).
-2. **Remaining Tier 1:** ST-01..03 (state rollback and replay, malformed and maximum-size state; states are now explored, so these come first), SIG-03 (signature reused across paths), OUT-04 (reorder), TL-01 (lock off-by-one, using the bisected boundary), MS-01/02 (mass limit and dust outputs, judged against relay policy as well as consensus), LIV-01 (state with no valid spend).
+1. **Sibling programs** (`--with other.sil`): coins of a second program in the same transaction, for contracts that pin another program's template (a market over a KCC-20 token, a minter). Their states are tied to the main contract by arithmetic, so this needs hints or a spec; until then, a baseline.
+2. **Remaining Tier 1:** ST-02/03 (state rollback and replay, malformed and maximum-size state; states are now explored, so these come first), SIG-03 (signature reused across paths), OUT-04 (reorder), TL-01 (lock off-by-one, using the bisected boundary), MS-01/02 (mass limit and dust outputs, judged against relay policy as well as consensus), LIV-01 (state with no valid spend).
 3. **GitHub Action** that runs on every `.sil` in a repo, comments the report on the PR, fails on findings.
 4. **Tier 2 spec** (`redteam.yaml`): roles (who may be paid what), invariants, property search and shrinking, the rest of the oracle pack (ORC-01..03, 05, 06: stale, replayed, extreme, missing and mismatched readings).
 5. **Node packs:** mempool flooding and eviction, orphan pool limits, RBF rules, block template inclusion, p2p message fuzzing on a multi-node simnet, liveness under load.

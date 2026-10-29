@@ -1,0 +1,37 @@
+// token_family.sil: a minimal covenant-family token for the engine's own tests.
+// Coins share one covenant id; a transfer splits or moves the amount into
+// successor coins it authorizes, signed by the owner recorded in state.
+pragma silverscript ^0.1.0;
+
+contract Token(byte[32] init_owner, int init_amount) {
+    struct Slot {
+        int amount;
+        byte[32] owner;
+    }
+
+    int amount = init_amount;
+    byte[32] owner = init_owner;
+
+    entry transfer(Slot[] next, byte[] witness) {
+        byte[32] id = OpInputCovenantId(this.activeInputIndex);
+        require(OpCovInputCount(id) == 1);
+        int n = OpAuthOutputCount(this.activeInputIndex);
+        require(n >= 1);
+        require(n <= 2);
+        require(OpCovOutputCount(id) == n);
+        require(next.length == n);
+        int total = 0;
+        for (i, 0, next.length, 2) {
+            require(next[i].amount >= 0);
+            total = total + next[i].amount;
+        }
+        require(total == amount);
+        require(checkSig(sig(byte[65](witness)), pubkey(owner)));
+        for (k, 0, n, 2) {
+            validateOutputState(OpAuthOutputIdx(this.activeInputIndex, k), State {
+                amount: next[k].amount,
+                owner: next[k].owner,
+            });
+        }
+    }
+}

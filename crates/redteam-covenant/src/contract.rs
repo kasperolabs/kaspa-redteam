@@ -91,6 +91,9 @@ pub struct Contract {
     /// Ctor int values, reused as entry-argument candidates.
     pub ctor_ints: Vec<i64>,
     pub has_covenant_decls: bool,
+    /// The source reads covenant ids or authorized outputs: sandbox coins get
+    /// a covenant id and successor outputs are bound to it.
+    pub cov_mode: bool,
 }
 
 impl Contract {
@@ -127,13 +130,42 @@ impl Contract {
         }
 
         let values: Vec<ArtifactValue> = args.iter().map(|a| a.value.clone()).collect();
-        let artifact = silverscript_lang::compiler::compile_to_sil_abi_artifact(source, &values)
+        let mut artifact = silverscript_lang::compiler::compile_to_sil_abi_artifact(source, &values)
             .map_err(|e| anyhow!("compile error: {e}"))?;
+        // A `byte[32] ...template` parameter is the program's own template hash
+        // (what `readInputStateWithTemplate` checks a sibling coin of the same
+        // program against). The hash does not depend on state, so compile once,
+        // read it, and compile again with it.
+        let own_template = artifact.contracts.values().next().map(|c| c.compiled.template_hash.to_vec());
+        let mut retemplated = false;
+        if let Some(h) = own_template {
+            for a in args.iter_mut() {
+                if a.ty == "byte[32]" && a.name.to_ascii_lowercase().contains("template") && a.origin != "override" {
+                    a.value = ArtifactValue::Bytes(h.clone());
+                    a.origin = "own template hash".into();
+                    retemplated = true;
+                }
+            }
+        }
+        if retemplated {
+            let values: Vec<ArtifactValue> = args.iter().map(|a| a.value.clone()).collect();
+            artifact = silverscript_lang::compiler::compile_to_sil_abi_artifact(source, &values)
+                .map_err(|e| anyhow!("compile error: {e}"))?;
+        }
         if artifact.contracts.len() != 1 {
             bail!("expected exactly one contract in the file, found {}", artifact.contracts.len());
         }
         let (contract_name, c) = artifact.contracts.iter().next().unwrap();
         let bytecode = c.compiled.bytecode.clone();
+        if std::env::var_os("REDTEAM_DEBUG").is_some() {
+            eprintln!(
+                "compiled {contract_name}: {} bytes, state at {}..{}, template {}",
+                bytecode.len(),
+                c.compiled.state_span.offset,
+                c.compiled.state_span.offset + c.compiled.state_span.len,
+                faster_hex::hex_string(&c.compiled.template_hash)
+            );
+        }
         let entries = c
             .entries
             .iter()
@@ -185,6 +217,10 @@ impl Contract {
             csv_values,
             ctor_ints,
             has_covenant_decls,
+            cov_mode: has_covenant_decls
+                || ["OpInputCovenantId", "OpCovInput", "OpCovOutput", "OpAuthOutput"]
+                    .iter()
+                    .any(|k| source.contains(k)),
             entries,
             wallets,
             secrets,
@@ -221,6 +257,7 @@ impl Contract {
             csv_values: vec![],
             ctor_ints: vec![],
             has_covenant_decls: false,
+            cov_mode: false,
         }
     }
 
@@ -236,6 +273,15 @@ impl Contract {
         out.extend(encoded);
         out.extend_from_slice(&self.bytecode[span.offset + span.len..]);
         Ok(out)
+    }
+
+    /// Fields of struct `name`; `State` is the contract's runtime state.
+    pub fn struct_fields(&self, name: &str) -> Option<Vec<(String, TypeArtifact)>> {
+        if name == "State" {
+            return Some(self.state_fields.clone());
+        }
+        let s = self.artifact.as_ref()?.structs.get(name)?;
+        Some(s.fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect())
     }
 
     pub fn is_stateful(&self) -> bool {
@@ -304,6 +350,8 @@ pub fn blake2b(b: &[u8]) -> Vec<u8> {
 enum HashUse {
     /// `ScriptPubKeyP2SH(h)`: the address of another covenant.
     P2shTarget,
+    /// Used as a key itself (`pubkey(owner)`), or named like one.
+    Key,
     PubkeyBlake2b,
     SecretSha256,
     SecretBlake2b,
@@ -328,6 +376,12 @@ fn hash_use(source: &str, name: &str) -> HashUse {
         HashUse::P2shTarget
     } else if any("blake2b(byte[](") || (any("blake2b(") && (any("pk") || any("pubkey") || any("Pk"))) {
         HashUse::PubkeyBlake2b
+    } else if any(&format!("pubkey({name})")) || {
+        let n = name.to_ascii_lowercase();
+        ["owner", "pk", "pubkey", "key"].iter().any(|k| n.contains(k))
+            && !["hash", "script", "template", "commitment", "guard", "id"].iter().any(|k| n.contains(k))
+    } {
+        HashUse::Key
     } else if any("blake2b(") {
         HashUse::SecretBlake2b
     } else {
@@ -363,9 +417,18 @@ fn default_value(
     stand_ins: &mut Vec<StandIn>,
 ) -> Result<(ArtifactValue, String)> {
     Ok(match ty {
+        TypeArtifact::Int if loop_bound(source, name) => (ArtifactValue::Int(3), "default (loop bound)".into()),
         TypeArtifact::Int => (ArtifactValue::Int(int_default(name)), "default".into()),
         TypeArtifact::Temporal => (ArtifactValue::Int(1_600_000_000_000), "default".into()),
         TypeArtifact::Bool => (ArtifactValue::Bool(true), "default".into()),
+        // Scheme, type and mode selectors: 0 is the first (usually the plain key) case.
+        TypeArtifact::Byte
+            if ["scheme", "type", "kind", "mode", "identifier", "flag"]
+                .iter()
+                .any(|k| name.to_ascii_lowercase().contains(k)) =>
+        {
+            (ArtifactValue::Byte(0), "default".into())
+        }
         TypeArtifact::Byte => (ArtifactValue::Byte(0x11), "default".into()),
         // `ownerScript`, `payoutScript`...: a full scriptPubKey as the script sees it
         // (2-byte version + script). Give it a test party's P2PK so paths paying it
@@ -388,6 +451,10 @@ fn default_value(
                 let h = blake2b(&st.redeem);
                 stand_ins.push(st);
                 (ArtifactValue::Bytes(h), format!("p2sh(stand-in:{name})"))
+            }
+            HashUse::Key => {
+                let i = w.party(name);
+                (ArtifactValue::Bytes(w.parties[i].xonly().to_vec()), format!("party:{name}"))
             }
             HashUse::PubkeyBlake2b => {
                 let i = w.party(name);
@@ -522,4 +589,25 @@ mod tests {
             TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Pubkey), len: 3 }
         );
     }
+}
+
+/// `name` is the bound of a `for (i, from, to, BOUND)` loop: the compiler
+/// unrolls it, so it must be small.
+fn loop_bound(source: &str, name: &str) -> bool {
+    let mut rest = source;
+    while let Some(i) = rest.find("for") {
+        let after = &rest[i + 3..];
+        let before_ok = rest[..i].chars().next_back().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+        let t = after.trim_start();
+        if before_ok && t.starts_with('(') {
+            if let Some(close) = t.find(')') {
+                let parts: Vec<&str> = t[1..close].split(',').map(str::trim).collect();
+                if parts.len() == 4 && parts[3] == name {
+                    return true;
+                }
+            }
+        }
+        rest = after;
+    }
+    false
 }

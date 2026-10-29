@@ -158,7 +158,25 @@ pub fn tune(file_name: &str, source: &str, overrides: &BTreeMap<String, String>,
         }
     }
 
-    let mut chosen: BTreeMap<String, (i64, String)> = BTreeMap::new();
+    let mut chosen: BTreeMap<String, (String, String)> = BTreeMap::new();
+    // Flags first: a `bool initialized = true` default closes `init` for good.
+    for a in contract.args.iter().filter(|a| !overrides.contains_key(&a.name)) {
+        let ArtifactValue::Bool(b) = a.value else { continue };
+        let mut trial = overrides.clone();
+        for (k, (v, _)) in &chosen {
+            trial.insert(k.clone(), v.clone());
+        }
+        trial.insert(a.name.clone(), (!b).to_string());
+        let Ok(c2) = Contract::load(file_name, source, &trial) else { continue };
+        if let Some(entry) = unexplored.iter().find(|e| {
+            !chosen.values().any(|(_, opened)| opened == *e)
+                && states
+                    .iter()
+                    .any(|st| baseline::search_path_budget(&c2, judge, e, st.as_ref(), TUNE_BUDGET).baseline.is_some())
+        }) {
+            chosen.insert(a.name.clone(), ((!b).to_string(), entry.clone()));
+        }
+    }
     for entry in &unexplored {
         let Some(body) = entry_body(source, entry) else { continue };
         let params: Vec<&String> = current
@@ -168,7 +186,9 @@ pub fn tune(file_name: &str, source: &str, overrides: &BTreeMap<String, String>,
         'params: for param in params {
             let mut others = current.clone();
             for (k, (v, _)) in &chosen {
-                others.insert(k.clone(), *v);
+                if let Ok(n) = v.parse::<i64>() {
+                    others.insert(k.clone(), n);
+                }
             }
             for v in candidates(body, param, &consts, &others) {
                 if Some(&v) == current.get(param) {
@@ -176,7 +196,7 @@ pub fn tune(file_name: &str, source: &str, overrides: &BTreeMap<String, String>,
                 }
                 let mut trial = overrides.clone();
                 for (k, (val, _)) in &chosen {
-                    trial.insert(k.clone(), val.to_string());
+                    trial.insert(k.clone(), val.clone());
                 }
                 trial.insert(param.clone(), v.to_string());
                 let Ok(c2) = Contract::load(file_name, source, &trial) else { continue };
@@ -184,7 +204,7 @@ pub fn tune(file_name: &str, source: &str, overrides: &BTreeMap<String, String>,
                     baseline::search_path_budget(&c2, judge, entry, st.as_ref(), TUNE_BUDGET).baseline.is_some()
                 });
                 if opened {
-                    chosen.insert(param.clone(), (v, entry.clone()));
+                    chosen.insert(param.clone(), (v.to_string(), entry.clone()));
                     break 'params;
                 }
             }
@@ -197,7 +217,7 @@ pub fn tune(file_name: &str, source: &str, overrides: &BTreeMap<String, String>,
     // Keep the tuned set only if it explores at least as much as the defaults.
     let mut trial = overrides.clone();
     for (k, (v, _)) in &chosen {
-        trial.insert(k.clone(), v.to_string());
+        trial.insert(k.clone(), v.clone());
     }
     let mut tuned = Contract::load(file_name, source, &trial)?;
     let tuned_paths = baseline::search_all(&tuned, judge);
@@ -214,7 +234,7 @@ pub fn tune(file_name: &str, source: &str, overrides: &BTreeMap<String, String>,
     let mut notes = Vec::new();
     for a in tuned.args.iter_mut() {
         if let Some((v, entry)) = chosen.get(&a.name) {
-            let default = current.get(&a.name).copied().unwrap_or_default();
+            let default = current.get(&a.name).map(|n| n.to_string()).unwrap_or_else(|| (v != "true").to_string());
             a.origin = format!("tuned for `{entry}`");
             notes.push(format!(
                 "constructor `{}` set to {v} (default {default} failed a bound in `{entry}`); override with --arg {}=...",

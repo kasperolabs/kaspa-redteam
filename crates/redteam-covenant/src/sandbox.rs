@@ -82,6 +82,29 @@ pub enum ArgRecipe {
         arg: usize,
         hash: MsgHash,
     },
+    /// A `byte[]` argument carrying a transaction signature by `key` after a
+    /// fixed prefix (a KCC-20 witness: path byte `0x00`, then the signature).
+    SigBytes {
+        key: KeyRef,
+        prefix: Vec<u8>,
+    },
+    /// A state-shaped argument (`State next`, `KCC20State[] next_states`)
+    /// filled from the transaction itself: the states of the covenant's
+    /// successor outputs (or, for `inputs`, of its covenant inputs), mapped
+    /// field by field onto struct `item`.
+    States {
+        inputs: bool,
+        array: bool,
+        item: String,
+    },
+}
+
+/// Covenant id of every sandbox covenant coin, for contracts that read
+/// covenant ids (`OpInputCovenantId`, `OpCovInputCount`, `OpAuthOutputCount`).
+pub fn sandbox_covenant_id() -> kaspa_hashes::Hash {
+    let mut b = [0u8; 32];
+    b.copy_from_slice(blake2b_simd::Params::new().hash_length(32).hash(b"kaspa-redteam/covenant-id").as_bytes());
+    kaspa_hashes::Hash::from_bytes(b)
 }
 
 /// An input copied verbatim from an imported baseline.
@@ -238,7 +261,7 @@ impl SpendPlan {
             match i {
                 InputSpec::Covenant { args, .. } => {
                     for a in args {
-                        if let ArgRecipe::Sig(k) = a {
+                        if let ArgRecipe::Sig(k) | ArgRecipe::SigBytes { key: k, .. } = a {
                             if !v.contains(k) {
                                 v.push(*k);
                             }
@@ -257,7 +280,7 @@ impl SpendPlan {
     }
     pub fn has_sig_recipe(&self) -> bool {
         self.inputs.iter().any(
-            |i| matches!(i, InputSpec::Covenant { args, .. } if args.iter().any(|a| matches!(a, ArgRecipe::Sig(_)))),
+            |i| matches!(i, InputSpec::Covenant { args, .. } if args.iter().any(|a| matches!(a, ArgRecipe::Sig(_) | ArgRecipe::SigBytes { .. }))),
         )
     }
     pub fn has_datasig_recipe(&self) -> bool {
@@ -353,6 +376,11 @@ impl Judge {
     /// Builds and signs the transaction a plan describes.
     pub fn build(&self, contract: &Contract, plan: &SpendPlan) -> Result<Built> {
         let wallets = &contract.wallets;
+        // Covenant-aware contracts get real covenant identity: version 1, a
+        // covenant id on every covenant coin, successor outputs bound to it.
+        let version = if contract.cov_mode { plan.version.max(1) } else { plan.version };
+        let cov_id = contract.cov_mode.then(sandbox_covenant_id);
+        let first_cov = plan.inputs.iter().position(|i| matches!(i, InputSpec::Covenant { .. }));
         let first_state = plan
             .inputs
             .iter()
@@ -373,24 +401,24 @@ impl Judge {
                         fresh,
                         vec![],
                         *sequence,
-                        commit_for(plan.version, contract.sig_ops),
+                        commit_for(version, contract.sig_ops),
                     ));
-                    entries.push(UtxoEntry::new(*value, pay_to_script_hash_script(&script), UTXO_DAA, false, None));
+                    entries.push(UtxoEntry::new(*value, pay_to_script_hash_script(&script), UTXO_DAA, false, cov_id));
                     redeems.push(Some(script));
                 }
                 InputSpec::P2pk { owner, value } => {
-                    inputs.push(TransactionInput::new_with_mass(fresh, vec![], 0, commit_for(plan.version, 1)));
+                    inputs.push(TransactionInput::new_with_mass(fresh, vec![], 0, commit_for(version, 1)));
                     entries.push(UtxoEntry::new(*value, wallets.get(*owner).p2pk(), UTXO_DAA, false, None));
                     redeems.push(None);
                 }
                 InputSpec::StandIn { target, value } => {
                     let redeem = contract.stand_ins[*target].redeem.clone();
-                    inputs.push(TransactionInput::new_with_mass(fresh, vec![], 0, commit_for(plan.version, 0)));
+                    inputs.push(TransactionInput::new_with_mass(fresh, vec![], 0, commit_for(version, 0)));
                     entries.push(UtxoEntry::new(*value, pay_to_script_hash_script(&redeem), UTXO_DAA, false, None));
                     redeems.push(Some(redeem));
                 }
                 InputSpec::Raw(r) => {
-                    let commit = if ComputeCommit::version_expects_compute_budget_field(plan.version) {
+                    let commit = if ComputeCommit::version_expects_compute_budget_field(version) {
                         ComputeCommit::ComputeBudget(r.compute_budget.into())
                     } else {
                         ComputeCommit::SigopCount(r.sig_op_count.into())
@@ -408,15 +436,22 @@ impl Judge {
         }
         let mut outputs = Vec::with_capacity(plan.outputs.len());
         for o in &plan.outputs {
+            let binding = match (o.covenant, cov_id, first_cov, &o.to) {
+                (Some(b), ..) => Some(b),
+                (None, Some(id), Some(at), Dest::SelfCovenant | Dest::Successor(_)) => {
+                    Some(CovenantBinding::new(at as u16, id))
+                }
+                _ => None,
+            };
             outputs.push(TransactionOutput::with_covenant(
                 o.value,
                 Self::dest_spk(contract, wallets, &o.to, first_state)?,
-                o.covenant,
+                binding,
             ));
         }
 
         let mut tx = Transaction::new(
-            plan.version,
+            version,
             inputs,
             outputs,
             plan.lock_time,
@@ -476,6 +511,14 @@ impl Judge {
                                         ArgRecipe::Value(v) => v.clone(),
                                         ArgRecipe::Sig(k) => ArtifactValue::Bytes(sign(*k)),
                                         ArgRecipe::RawSig(b) => ArtifactValue::Bytes(b.clone()),
+                                        ArgRecipe::SigBytes { key, prefix } => {
+                                            let mut b = prefix.clone();
+                                            b.extend(sign(*key));
+                                            ArtifactValue::Bytes(b)
+                                        }
+                                        ArgRecipe::States { inputs, array, item } => {
+                                            states_arg(contract, plan, *inputs, *array, item)?
+                                        }
                                         ArgRecipe::DataSigOf { key, arg, hash } => {
                                             let Some(ArgRecipe::Value(ArtifactValue::Bytes(m))) = args.get(*arg) else {
                                                 return Err(anyhow!("data signature points at a non-bytes argument"));
@@ -532,7 +575,15 @@ impl Judge {
             None,
         ) {
             Ok(fee) => Verdict::Accepted { fee },
-            Err(e) => Verdict::Rejected(e.to_string()),
+            Err(e) => {
+                let msg = e.to_string();
+                match failing_input(&populated) {
+                    Some((i, why)) if msg.contains("signature script") => {
+                        Verdict::Rejected(format!("{msg} (input {i}: {why})"))
+                    }
+                    _ => Verdict::Rejected(msg),
+                }
+            }
         }
     }
 
@@ -579,4 +630,89 @@ fn hex_ser<S: serde::Serializer>(v: &[u8], s: S) -> std::result::Result<S::Ok, S
 
 fn spk_ser<S: serde::Serializer>(v: &ScriptPublicKey, s: S) -> std::result::Result<S::Ok, S::Error> {
     s.serialize_str(&format!("{:04x}{}", v.version(), faster_hex::hex_string(v.script())))
+}
+
+/// Builds a state-shaped argument from the plan: the states its covenant
+/// successor outputs carry (or its covenant inputs hold), each mapped onto
+/// struct `item` by field name. Fields the state lacks get zero values.
+fn states_arg(contract: &Contract, plan: &SpendPlan, inputs: bool, array: bool, item: &str) -> Result<ArtifactValue> {
+    let fields = contract.struct_fields(item).ok_or_else(|| anyhow!("unknown struct `{item}`"))?;
+    let init = contract.initial_state.as_ref();
+    let first_state = plan
+        .inputs
+        .iter()
+        .find_map(|i| match i {
+            InputSpec::Covenant { state, .. } => Some(state.as_ref()),
+            _ => None,
+        })
+        .flatten()
+        .or(init);
+    let states: Vec<Option<&StateValues>> = if inputs {
+        plan.inputs
+            .iter()
+            .filter_map(|i| match i {
+                InputSpec::Covenant { state, .. } => Some(state.as_ref().or(init)),
+                _ => None,
+            })
+            .collect()
+    } else {
+        plan.outputs
+            .iter()
+            .filter_map(|o| match &o.to {
+                Dest::Successor(s) => Some(Some(s)),
+                Dest::SelfCovenant => Some(first_state),
+                _ => None,
+            })
+            .collect()
+    };
+    let to_obj = |s: Option<&StateValues>| {
+        let mut m = BTreeMap::new();
+        for (name, ty) in &fields {
+            let v = s.and_then(|s| s.get(name)).cloned().unwrap_or_else(|| zero_value(ty));
+            m.insert(name.clone(), v);
+        }
+        ArtifactValue::Object(m)
+    };
+    if array {
+        Ok(ArtifactValue::Array(states.into_iter().map(to_obj).collect()))
+    } else {
+        let first = states.into_iter().next().ok_or_else(|| anyhow!("no covenant state to pass as `{item}`"))?;
+        Ok(to_obj(first))
+    }
+}
+
+pub fn zero_value(ty: &silverscript_abi::TypeArtifact) -> ArtifactValue {
+    use silverscript_abi::TypeArtifact as T;
+    match ty {
+        T::Int | T::Temporal => ArtifactValue::Int(0),
+        T::Bool => ArtifactValue::Bool(false),
+        T::Byte => ArtifactValue::Byte(0),
+        T::FixedBytes { len } => ArtifactValue::Bytes(vec![0; *len]),
+        T::Pubkey => ArtifactValue::Bytes(vec![0; 32]),
+        T::Text => ArtifactValue::Text(String::new()),
+        T::FixedArray { item, len } => ArtifactValue::Array((0..*len).map(|_| zero_value(item)).collect()),
+        T::DynamicArray { .. } => ArtifactValue::Array(vec![]),
+        _ => ArtifactValue::Bytes(vec![]),
+    }
+}
+
+/// The first input whose script fails, and why: consensus reports only that
+/// some script failed.
+fn failing_input(tx: &PopulatedTransaction) -> Option<(usize, String)> {
+    use kaspa_consensus_core::tx::VerifiableTransaction;
+    use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine, caches::Cache, covenants::CovenantsContext};
+    let cov = CovenantsContext::from_tx(tx).ok()?;
+    let cache = Cache::new(64);
+    let reused = SigHashReusedValuesUnsync::new();
+    let ctx = EngineCtx::new(&cache).with_covenants_ctx(&cov).with_reused(&reused);
+    let flags = EngineFlags { sigop_script_units: kaspa_consensus_core::mass::Gram(1000).into() };
+    for (i, (input, entry)) in tx.populated_inputs().enumerate() {
+        let limit = input.compute_commit.allowed_script_units();
+        let mut vm =
+            TxScriptEngine::from_transaction_input_with_script_units_limit(tx, input, i, entry, ctx, flags, limit);
+        if let Err(e) = vm.execute() {
+            return Some((i, e.to_string()));
+        }
+    }
+    None
 }

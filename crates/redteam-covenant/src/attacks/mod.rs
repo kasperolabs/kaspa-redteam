@@ -13,6 +13,7 @@ pub mod oracle;
 pub mod outputs;
 pub mod secrets;
 pub mod sig;
+pub mod state;
 
 use crate::sandbox::{ArgRecipe, Dest, InputSpec, OutputSpec, SpendPlan};
 use crate::wallets::KeyRef;

@@ -27,7 +27,9 @@ const MAX_ARG_COMBOS: usize = 256;
 const FIRST_PASS_COMBOS: usize = 16;
 const FIRST_PASS_SHAPES: usize = 100;
 const MAX_STATES: usize = 4;
-const MAX_SUCCESSORS: usize = 12;
+const MAX_SUCCESSORS: usize = 18;
+/// One-field changes first, then this many slots are left for two-field changes.
+const MAX_SINGLE_SUCCESSORS: usize = 12;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LockInfo {
@@ -113,10 +115,32 @@ pub fn search_all(contract: &Contract, judge: &Judge) -> Vec<PathStatus> {
     let mut i = 0;
     while i < states.len() && i < MAX_STATES {
         let st = states[i].clone();
-        let level: Vec<PathStatus> =
+        let mut level: Vec<PathStatus> =
             contract.entries.par_iter().map(|e| search_path(contract, judge, &e.name, st.as_ref())).collect();
+        // Delegate entries (a KCC-20 `transfer_delegator`) only run next to a
+        // leader coin of the same covenant: retry them beside an explored path.
+        if contract.cov_mode {
+            let leaders: Vec<Baseline> = level
+                .iter()
+                .filter_map(|p| p.baseline.clone())
+                .filter(|b| b.plan.inputs.iter().filter(|i| matches!(i, InputSpec::Covenant { .. })).count() == 1)
+                .collect();
+            for ps in level.iter_mut().filter(|p| p.baseline.is_none()) {
+                for leader in &leaders {
+                    if let Some(b) = search_cospend(contract, judge, &ps.name, st.as_ref(), leader, &mut ps.tries) {
+                        ps.baseline = Some(b);
+                        ps.unexplored_reason = None;
+                        break;
+                    }
+                }
+            }
+        }
         for ps in &level {
             if let Some(b) = &ps.baseline {
+                // States reached only by merging two coins are not new starting points.
+                if b.plan.inputs.iter().filter(|i| matches!(i, InputSpec::Covenant { .. })).count() > 1 {
+                    continue;
+                }
                 for o in &b.plan.outputs {
                     if let Dest::Successor(s) = &o.to {
                         let canon = if Some(s) == contract.initial_state.as_ref() { None } else { Some(s.clone()) };
@@ -262,8 +286,13 @@ pub fn search_path_budget(
             }
         }
     }
+    let sibling = if contract.source.contains("WithTemplate(") || contract.source.contains("WithInputTemplate(") {
+        "; it may need a coin of another program (the contract reads or creates states by template hash), which cannot be built from this file alone"
+    } else {
+        ""
+    };
     status.unexplored_reason = Some(format!(
-        "no accepted spend among {} candidates (signers x arguments x outputs x locks); pass --arg values or import a baseline (--baseline)",
+        "no accepted spend among {} candidates (signers x arguments x outputs x locks){sibling}; pass --arg values or import a baseline (--baseline)",
         status.tries
     ));
     status
@@ -415,6 +444,15 @@ fn candidates(
         TypeArtifact::Byte => vec![v(ArtifactValue::Byte(0)), v(ArtifactValue::Byte(1))],
         TypeArtifact::Bytes => {
             let mut out: Vec<_> = Vec::new();
+            // A signature carried inside bytes (`sig(byte[65](witness))`):
+            // the signature alone, or after a one-byte path selector.
+            if c.source.contains("sig(byte[65](") {
+                let keys = if parties.is_empty() { vec![KeyRef::Attacker] } else { parties.clone() };
+                for k in keys.iter().take(2) {
+                    out.push((ArgRecipe::SigBytes { key: *k, prefix: vec![0x00] }, None));
+                    out.push((ArgRecipe::SigBytes { key: *k, prefix: vec![] }, None));
+                }
+            }
             if has_datasig {
                 out.extend(c.msg_candidates.iter().map(|m| v(ArtifactValue::Bytes(m.clone()))));
             }
@@ -453,11 +491,21 @@ fn candidates(
             out.push(v(ArtifactValue::Text("redteam".into())));
             out
         }
+        // State-shaped arguments follow the transaction: the successor states
+        // its outputs carry, or (`prevStates`) the states its covenant inputs hold.
+        TypeArtifact::Struct { name } if c.struct_fields(name).is_some() => {
+            vec![(ArgRecipe::States { inputs: is_input_param(param), array: false, item: name.clone() }, None)]
+        }
+        TypeArtifact::FixedArray { item, .. } | TypeArtifact::DynamicArray { item } if matches!(item.as_ref(), TypeArtifact::Struct { name } if c.struct_fields(name).is_some()) =>
+        {
+            let TypeArtifact::Struct { name } = item.as_ref() else { unreachable!() };
+            vec![(ArgRecipe::States { inputs: is_input_param(param), array: true, item: name.clone() }, None)]
+        }
         TypeArtifact::FixedArray { .. } | TypeArtifact::DynamicArray { .. } => {
-            return Err("array arguments are not searched yet; import a baseline (--baseline)".into());
+            return Err("arrays of plain values are not searched yet; import a baseline (--baseline)".into());
         }
         TypeArtifact::Struct { name } => {
-            return Err(format!("struct `{name}` arguments are not searched yet; import a baseline (--baseline)"));
+            return Err(format!("struct `{name}` is not defined in this file; import a baseline (--baseline)"));
         }
     })
 }
@@ -514,16 +562,24 @@ fn successors(c: &Contract, from: &StateValues) -> Vec<StateValues> {
         match (ty, &cur) {
             (TypeArtifact::Bool, Some(ArtifactValue::Bool(b))) => vals.push(ArtifactValue::Bool(!b)),
             (TypeArtifact::Int | TypeArtifact::Temporal, Some(ArtifactValue::Int(n))) => {
-                let mut ints = vec![n + 1, 1, 0, n - 1, 2];
+                // n + 1, then 2n (two coins merged), then small values.
+                let mut ints = vec![n + 1, 2 * n, 1, 0, n - 1, 2];
                 ints.extend(c.ctor_ints.iter().copied().take(3));
                 for x in ints {
                     if x != *n && !vals.contains(&ArtifactValue::Int(x)) {
                         vals.push(ArtifactValue::Int(x));
                     }
                 }
-                vals.truncate(5);
+                vals.truncate(6);
             }
             (TypeArtifact::FixedBytes { len }, Some(ArtifactValue::Bytes(b))) => {
+                // A covenant id recorded in state (`newState.covid == OpOutputCovenantId(0)`).
+                if c.cov_mode && *len == 32 {
+                    let id = crate::sandbox::sandbox_covenant_id().as_bytes().to_vec();
+                    if *b != id {
+                        vals.push(ArtifactValue::Bytes(id));
+                    }
+                }
                 let zero = vec![0u8; *len];
                 if *b != zero {
                     vals.push(ArtifactValue::Bytes(zero));
@@ -541,6 +597,9 @@ fn successors(c: &Contract, from: &StateValues) -> Vec<StateValues> {
     let mut out = vec![from.clone()];
     for (name, vals) in &alts {
         for v in vals {
+            if out.len() >= MAX_SINGLE_SUCCESSORS {
+                break;
+            }
             let mut s = from.clone();
             s.insert(name.clone(), v.clone());
             out.push(s);
@@ -675,4 +734,62 @@ fn output_candidates(
         }
     }
     out
+}
+
+/// `prevStates`, `inputStates`, `old`: states being spent rather than created.
+fn is_input_param(param: &str) -> bool {
+    let p = param.to_ascii_lowercase();
+    ["prev", "input", "old", "current", "spent"].iter().any(|k| p.contains(k))
+}
+
+/// Searches `entry_name` as a second coin of the same covenant next to the
+/// leader spend `leader` (its input first, as covenant index 0). The two coins
+/// share the outputs, so successor states may carry both coins' amounts.
+fn search_cospend(
+    contract: &Contract,
+    judge: &Judge,
+    entry_name: &str,
+    state: Option<&StateValues>,
+    leader: &Baseline,
+    tries: &mut usize,
+) -> Option<Baseline> {
+    const BUDGET: usize = 6_000;
+    let entry = contract.entry(entry_name)?;
+    let lead_input = leader.plan.inputs.iter().find(|i| matches!(i, InputSpec::Covenant { .. }))?.clone();
+    let lead_value = lead_input.value();
+    let msg_arg = entry.params.iter().position(|p| matches!(p.ty, TypeArtifact::Bytes));
+    let has_datasig = entry.params.iter().any(|p| matches!(p.ty, TypeArtifact::Datasig));
+    let mut per_param = Vec::new();
+    for p in &entry.params {
+        per_param.push(candidates(contract, &p.name, &p.ty, has_datasig, msg_arg).ok()?);
+    }
+    let combos = ranked_cartesian(&per_param, 64);
+    let (pov_daa, block_time) = (leader.plan.pov_daa, leader.plan.block_time);
+    let shapes = output_candidates(contract, COVENANT_VALUE, lead_value, state);
+    let mut tried = 0;
+    // Shapes outer: the arguments here are few (a witness, a signature),
+    // the shapes many, and one wrong argument must not use up the budget.
+    for outs in &shapes {
+        for (args, secrets) in &combos {
+            if tried >= BUDGET {
+                return None;
+            }
+            tried += 1;
+            *tries += 1;
+            let me = InputSpec::Covenant {
+                entry: entry_name.into(),
+                args: args.clone(),
+                value: COVENANT_VALUE,
+                sequence: 0,
+                state: state.cloned(),
+            };
+            let plan = SpendPlan::simple(vec![lead_input.clone(), me], outs.clone(), 0, pov_daa, block_time);
+            let (v, _) = judge.run(contract, &plan);
+            if v.accepted() {
+                let signers = plan.signers();
+                return Some(Baseline { plan, signers, secrets: secrets.clone(), lock: None });
+            }
+        }
+    }
+    None
 }

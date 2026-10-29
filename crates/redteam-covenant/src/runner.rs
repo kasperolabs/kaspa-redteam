@@ -152,7 +152,7 @@ pub fn run_paths_timed(
     }
     if contract.has_covenant_decls {
         notes.push(
-            "covenant declarations (#[covenant]) are compiled but their continuation rules are not attacked yet".into(),
+            "covenant declarations (#[covenant]) are searched and attacked like entries; no attack targets the continuation rules themselves yet".into(),
         );
     }
     notes.push("judge: rusty-kaspa consensus validator 2.1.0 in process (mempool relay policy not applied)".into());
