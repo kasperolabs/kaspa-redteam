@@ -1,0 +1,19 @@
+// Name registry entry (one coin per name, owner kept in state), BROKEN.
+// Expected: FAIL. Anyone may "transfer" the name: the next owner is checked
+// for nothing.
+pragma silverscript ^0.1.0;
+
+contract NameEntry(byte[32] init_owner, byte[32] name_hash) {
+    byte[32] owner = init_owner;
+    byte[32] name = name_hash;
+
+    entry transfer(byte[32] new_owner) {
+        byte[32] id = OpInputCovenantId(this.activeInputIndex);
+        require(OpCovInputCount(id) == 1);
+        require(OpAuthOutputCount(this.activeInputIndex) == 1);
+        require(OpCovOutputCount(id) == 1);
+        int out = OpAuthOutputIdx(this.activeInputIndex, 0);
+        require(tx.outputs[out].value >= tx.inputs[this.activeInputIndex].value);
+        validateOutputState(out, State { owner: new_owner, name: name });
+    }
+}

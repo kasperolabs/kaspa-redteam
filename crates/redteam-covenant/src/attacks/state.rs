@@ -46,7 +46,15 @@ impl CovenantAttack for St01 {
                     if c.key_of(v).is_none() || *v == attacker {
                         continue;
                     }
-                    let mut plan = b.plan.clone();
+                    // Arguments that named the honest owner (`transfer(new_owner)`)
+                    // name the attacker too, so the next state stays consistent.
+                    let old = v.clone();
+                    let mut plan = super::map_covenant_args(&b.plan, |a| match a {
+                        crate::sandbox::ArgRecipe::Value(ArtifactValue::Bytes(x)) if *x == old => {
+                            crate::sandbox::ArgRecipe::Value(ArtifactValue::Bytes(attacker.clone()))
+                        }
+                        other => other.clone(),
+                    });
                     let mut next = st.clone();
                     next.insert((*f).clone(), ArtifactValue::Bytes(attacker.clone()));
                     plan.outputs[j].to = Dest::Successor(next);

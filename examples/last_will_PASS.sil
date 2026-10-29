@@ -1,0 +1,19 @@
+// Inheritance (dead man's switch), correct. Expected: PASS.
+// After the inactivity period anyone may trigger it, but the whole coin (less
+// a bounded fee) can only go to the heir. The owner can spend at any time,
+// which also resets the clock.
+pragma silverscript ^0.1.0;
+
+contract LastWill(pubkey owner, pubkey heir, int inactiveDaa, int maxFee) {
+    entry inherit() {
+        require(this.ageDaa >= inactiveDaa);
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(heir)));
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - maxFee);
+    }
+
+    entry spend(sig s) {
+        require(checkSig(s, owner));
+    }
+}

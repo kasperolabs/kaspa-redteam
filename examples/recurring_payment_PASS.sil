@@ -1,0 +1,20 @@
+// Recurring payment (allowance / subscription), correct. Expected: PASS.
+// The installment goes to the recipient and everything else goes back into
+// this same covenant, less a bounded fee. Two outputs, both pinned.
+pragma silverscript ^0.1.0;
+
+contract Allowance(pubkey funder, pubkey recipient, int installment, int periodDaa, int maxFee) {
+    entry pay() {
+        require(this.ageDaa >= periodDaa);
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 2);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(recipient)));
+        require(tx.outputs[0].value == installment);
+        require(tx.outputs[1].scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey);
+        require(tx.outputs[1].value >= tx.inputs[this.activeInputIndex].value - installment - maxFee);
+    }
+
+    entry cancel(sig s) {
+        require(checkSig(s, funder));
+    }
+}

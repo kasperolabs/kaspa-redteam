@@ -1,0 +1,18 @@
+// All-or-nothing crowdfunding pledge, correct. Expected: PASS.
+// After the deadline anyone may trigger the refund, and it can only pay the
+// backer back, in full less a bounded fee.
+pragma silverscript ^0.1.0;
+
+contract Pledge(pubkey creator, pubkey backer, int deadlineDaa, int maxFee) {
+    entry claim(sig s) {
+        require(checkSig(s, creator));
+    }
+
+    entry refund() {
+        require(this.ageDaa >= deadlineDaa);
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(backer)));
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - maxFee);
+    }
+}

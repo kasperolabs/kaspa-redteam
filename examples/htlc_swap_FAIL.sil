@@ -1,0 +1,16 @@
+// Atomic swap (HTLC), BROKEN. Expected: FAIL.
+// Whoever shows the secret takes the coin, and nothing says to whom it goes.
+// The secret appears in the mempool with the honest claim, so anyone watching
+// can copy it into their own transaction first.
+pragma silverscript ^0.1.0;
+
+contract HtlcSwap(byte[32] hash, pubkey recipient, pubkey sender, int timeoutDaa) {
+    entry claim(byte[] secret) {
+        require(sha256(secret) == hash);
+    }
+
+    entry refund(sig s) {
+        require(this.ageDaa >= timeoutDaa);
+        require(checkSig(s, sender));
+    }
+}

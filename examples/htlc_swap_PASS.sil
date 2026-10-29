@@ -1,0 +1,17 @@
+// Atomic swap (HTLC), correct. Expected: PASS.
+// The secret alone is not enough: the recipient must also sign, so a copied
+// secret is useless to anyone else. The sender can take the coin back after
+// the timeout.
+pragma silverscript ^0.1.0;
+
+contract HtlcSwap(byte[32] hash, pubkey recipient, pubkey sender, int timeoutDaa) {
+    entry claim(byte[] secret, sig s) {
+        require(sha256(secret) == hash);
+        require(checkSig(s, recipient));
+    }
+
+    entry refund(sig s) {
+        require(this.ageDaa >= timeoutDaa);
+        require(checkSig(s, sender));
+    }
+}

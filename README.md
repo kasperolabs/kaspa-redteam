@@ -24,6 +24,8 @@ kaspa-redteam v0.2.0  minerdrip_v1.sil  (library v0.2.0, covenant target)
 
 (A real bug from a real mainnet covenant, MinerDrip v1, caught in review in October 2026 and fixed in v2. The tool finds it in milliseconds; v2 comes back clean.)
 
+Want to see it work first? `examples/` has everyday contract shapes in a broken (`_FAIL`) and a fixed (`_PASS`) version: see [examples/README.md](examples/README.md).
+
 ## Install
 
 ```

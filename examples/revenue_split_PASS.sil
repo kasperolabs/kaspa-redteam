@@ -1,0 +1,16 @@
+// Revenue splitter (70% to the artist, the rest to the label), correct.
+// Expected: PASS. One coin per split, shares measured against this coin.
+pragma silverscript ^0.1.0;
+
+contract RevenueSplit(pubkey artist, pubkey label, int maxFee) {
+    entry split() {
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 2);
+        int total = tx.inputs[this.activeInputIndex].value - maxFee;
+        int artistShare = total * 7 / 10;
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(artist)));
+        require(tx.outputs[0].value >= artistShare);
+        require(tx.outputs[1].scriptPubKey == byte[](new ScriptPubKeyP2PK(label)));
+        require(tx.outputs[1].value >= total - artistShare);
+    }
+}

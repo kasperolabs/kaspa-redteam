@@ -1,0 +1,16 @@
+// Inheritance (dead man's switch), BROKEN. Expected: FAIL.
+// After a year of silence anyone may trigger the inheritance, and it checks
+// the amount but not that the heir receives it.
+pragma silverscript ^0.1.0;
+
+contract LastWill(pubkey owner, pubkey heir, int inactiveDaa, int maxFee) {
+    entry inherit() {
+        require(this.ageDaa >= inactiveDaa);
+        require(tx.inputs.length == 1);
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - maxFee);
+    }
+
+    entry spend(sig s) {
+        require(checkSig(s, owner));
+    }
+}

@@ -1,0 +1,59 @@
+// leaky_vault.sil: a deliberately broken vault for kaspa-redteam demos.
+// Every entry has a classic covenant bug. DO NOT DEPLOY.
+pragma silverscript ^0.1.0;
+
+contract LeakyVault(pubkey owner, pubkey payee, byte[32] hash, byte[32] sessionId, int cap, int maxFee) {
+
+    // SIG-01: the signature check is evaluated, but the OR makes it optional.
+    entry withdraw(sig s) {
+        require(checkSig(s, owner) || tx.inputs.length >= 1);
+    }
+
+    // SIG-02: the signature is checked against a key the spender brings.
+    entry rescue(pubkey pk, sig s) {
+        require(checkSig(s, pk));
+    }
+
+    // SEC-01: whoever reveals the secret takes the coin, to wherever they like.
+    entry claim(byte[] secret) {
+        require(sha256(secret) == hash);
+    }
+
+    // OUT-01: the amount is checked, the recipient is not.
+    entry sweep() {
+        require(tx.inputs.length == 1);
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - maxFee);
+    }
+
+    // OUT-02: the recipient is checked, the amount is not.
+    entry refund() {
+        require(tx.inputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(payee)));
+    }
+
+    // OUT-03: output 0 is checked, the change in output 1 is not.
+    entry pull() {
+        require(tx.inputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(payee)));
+        require(tx.outputs[0].value == cap);
+    }
+
+    // IN-01 / IN-02: the payout is measured against input 0, and two coins can share it.
+    entry pay() {
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(payee)));
+        require(tx.outputs[0].value >= tx.inputs[0].value - maxFee);
+    }
+
+    // ORC-04: the reading is verified against a key the spender passes in.
+    entry release(datasig s, byte[] msg, pubkey signer) {
+        require(msg.length == 36);
+        require(checkMsgSig(s, byte[32](blake2b(msg)), signer));
+        (byte[] tag, byte[] sid) = msg.split(4);
+        require(tag == byte[](0x52454c53));
+        require(sid == byte[](sessionId));
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(owner)));
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - 2000000);
+    }
+}

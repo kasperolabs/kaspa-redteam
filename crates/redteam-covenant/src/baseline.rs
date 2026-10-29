@@ -169,6 +169,30 @@ pub fn search_path_budget(
     state: Option<&StateValues>,
     budget: usize,
 ) -> PathStatus {
+    let first = search_layouts(contract, judge, entry_name, state, budget, false);
+    if first.baseline.is_some() || first.unexplored_reason.as_deref().is_some_and(|r| r.starts_with("parameter")) {
+        return first;
+    }
+    // Fallback: the spender adds a coin of their own (outputs worth more than
+    // the covenant coin). Tried last so ordinary paths keep their search order.
+    let mut second = search_layouts(contract, judge, entry_name, state, budget / 2, true);
+    second.tries += first.tries;
+    if second.baseline.is_none() {
+        second.unexplored_reason = first.unexplored_reason.map(|r| {
+            r.replace(&format!("among {} candidates", first.tries), &format!("among {} candidates", second.tries))
+        });
+    }
+    second
+}
+
+fn search_layouts(
+    contract: &Contract,
+    judge: &Judge,
+    entry_name: &str,
+    state: Option<&StateValues>,
+    budget: usize,
+    funding: bool,
+) -> PathStatus {
     let entry = contract.entry(entry_name).expect("entry exists");
     let id = match state {
         None => entry_name.to_string(),
@@ -202,10 +226,19 @@ pub fn search_path_budget(
     let timings = timings(contract, pov_daa, block_time);
 
     // Input layouts: alone, or next to a stand-in coin the covenant names.
-    let mut layouts: Vec<(Vec<InputSpec>, usize)> = vec![(vec![], 0)];
+    let mut layouts: Vec<(Vec<InputSpec>, usize)> = if funding { vec![] } else { vec![(vec![], 0)] };
     for k in 0..contract.stand_ins.len().min(2) {
+        if funding {
+            break;
+        }
         layouts.push((vec![InputSpec::StandIn { target: k, value: STAND_IN_VALUE }], 0));
         layouts.push((vec![InputSpec::StandIn { target: k, value: STAND_IN_VALUE }], 1));
+    }
+    // A plain coin of the spender's own after the covenant, for paths whose
+    // outputs must carry more than the covenant coin holds (a successor that
+    // keeps every sompi, a payment on top): the spender pays the fee or more.
+    if funding {
+        layouts.push((vec![InputSpec::P2pk { owner: KeyRef::Attacker, value: COVENANT_VALUE }], 0));
     }
 
     // Coin sizes: the default, then "exactly an amount plus a small fee",
@@ -663,8 +696,19 @@ fn output_candidates(
             continue;
         }
         let v = total - fee;
-        let mut amounts: Vec<u64> =
-            c.ctor_ints.iter().filter(|n| **n > 0 && (**n as u64) < v).map(|n| *n as u64).collect();
+        // Fractions the script computes with (`total * 7 / 10`): p/q of what is
+        // left, rounded up, for the small constants it pushes.
+        let small: Vec<u64> = c.pushed_ints.iter().copied().filter(|n| (1..=10_000).contains(n)).collect();
+        let mut amounts: Vec<u64> = Vec::new();
+        'ratios: for q in small.iter().rev() {
+            for p in small.iter().filter(|p| *p < q) {
+                if amounts.len() >= 3 {
+                    break 'ratios;
+                }
+                amounts.push((v as u128 * *p as u128).div_ceil(*q as u128) as u64);
+            }
+        }
+        amounts.extend(c.ctor_ints.iter().filter(|n| **n > 0 && (**n as u64) < v).map(|n| *n as u64));
         amounts.extend(c.pushed_ints.iter().copied().filter(|n| (10_000..v).contains(n)).take(4));
         amounts.push(cov_value / 2);
         // Basis-point splits: a * b / 10000 for an amount a and a rate b.
@@ -706,7 +750,17 @@ fn output_candidates(
                 for q in &everyone {
                     if p != q {
                         out.push(vec![o(cov_value - fee, p), o(extra_value, q)]);
+                        // The extra coin pays the fee; the covenant's value moves whole.
+                        if extra_value > *fee {
+                            out.push(vec![o(cov_value, p), o(extra_value - fee, q)]);
+                        }
                     }
+                }
+            }
+            // The covenant's value moves whole and the extra coin's change goes back to its owner.
+            if extra_value > *fee {
+                for p in &conts {
+                    out.push(vec![o(cov_value, p), o(extra_value - fee, &Dest::Key(KeyRef::Attacker))]);
                 }
             }
         }

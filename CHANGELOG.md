@@ -1,5 +1,11 @@
 # Changelog
 
+## Tool 0.3.1 (library 0.3.0)
+
+- `examples/`: eight everyday contract shapes (swap, inheritance, allowance, escrow, crowdfund, revenue split, oracle bet, name registry), each as `_FAIL` and `_PASS`, plus `leaky_vault_FAIL`; a test keeps the names honest.
+- Search: when nothing else works, the spender may add a coin of their own (successors that keep every sompi, payments on top of the covenant's value); amounts at the fractions the script computes with (`total * 7 / 10`).
+- ST-01 also rewrites arguments that named the honest owner (`transfer(new_owner)`).
+
 ## Tool 0.3.0 (library 0.3.0)
 
 - Covenant families from the `.sil` alone: sandbox coins carry a covenant id and successor outputs are bound to it (version 1 transactions); `struct` and struct-array arguments are built from the successor outputs (or, for `prev...` parameters, the covenant inputs); a signature can sit inside a `byte[]` witness after a path byte; delegate entries are searched as a second coin next to an explored leader; a `byte[32] ...template` constructor value becomes the program's own template hash.

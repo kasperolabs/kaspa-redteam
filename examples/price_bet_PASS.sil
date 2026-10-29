@@ -1,0 +1,17 @@
+// Two-party bet settled by an oracle reading, correct. Expected: PASS.
+// The oracle key is fixed at deploy; a reading for this bet pays Alice.
+pragma silverscript ^0.1.0;
+
+contract PriceBet(pubkey alice, pubkey oracle, byte[32] betId) {
+    entry settle(datasig s, byte[] msg) {
+        require(msg.length == 36);
+        require(checkMsgSig(s, byte[32](blake2b(msg)), oracle));
+        (byte[] tag, byte[] id) = msg.split(4);
+        require(tag == byte[](0x57494e41));
+        require(id == byte[](betId));
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(alice)));
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - 2000000);
+    }
+}

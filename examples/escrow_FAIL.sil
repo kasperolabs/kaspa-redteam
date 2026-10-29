@@ -1,0 +1,15 @@
+// Marketplace escrow with an arbiter, BROKEN. Expected: FAIL.
+// The arbiter's signature is checked against a key the caller passes in,
+// so anyone can act as the arbiter.
+pragma silverscript ^0.1.0;
+
+contract Escrow(pubkey buyer, pubkey seller, pubkey arbiter) {
+    entry release(sig s) {
+        require(checkSig(s, buyer));
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(seller)));
+    }
+
+    entry arbitrate(pubkey judge, sig s) {
+        require(checkSig(s, judge));
+    }
+}

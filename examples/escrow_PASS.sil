@@ -1,0 +1,19 @@
+// Marketplace escrow with an arbiter, correct. Expected: PASS.
+// The buyer releases to the seller; the arbiter (the key fixed at deploy)
+// can settle either way, but only to the buyer or the seller.
+pragma silverscript ^0.1.0;
+
+contract Escrow(pubkey buyer, pubkey seller, pubkey arbiter) {
+    entry release(sig s) {
+        require(checkSig(s, buyer));
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(seller)));
+    }
+
+    entry arbitrate(sig s) {
+        require(checkSig(s, arbiter));
+        require(
+            tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(seller))
+                || tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(buyer))
+        );
+    }
+}

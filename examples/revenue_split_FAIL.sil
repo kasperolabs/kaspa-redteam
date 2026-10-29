@@ -1,0 +1,16 @@
+// Revenue splitter (70% to the artist, the rest to the label), BROKEN.
+// Expected: FAIL. Anyone may trigger the split, but the shares are measured
+// against input 0, whoever owns it, and two coins of this covenant can be
+// paid out with one set of outputs.
+pragma silverscript ^0.1.0;
+
+contract RevenueSplit(pubkey artist, pubkey label, int maxFee) {
+    entry split() {
+        int total = tx.inputs[0].value - maxFee;
+        int artistShare = total * 7 / 10;
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(artist)));
+        require(tx.outputs[0].value >= artistShare);
+        require(tx.outputs[1].scriptPubKey == byte[](new ScriptPubKeyP2PK(label)));
+        require(tx.outputs[1].value >= total - artistShare);
+    }
+}

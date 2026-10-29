@@ -1,0 +1,16 @@
+// All-or-nothing crowdfunding pledge, BROKEN. Expected: FAIL.
+// After the deadline anyone may trigger the refund, but nothing checks that
+// the backer is the one refunded.
+pragma silverscript ^0.1.0;
+
+contract Pledge(pubkey creator, pubkey backer, int deadlineDaa, int maxFee) {
+    entry claim(sig s) {
+        require(checkSig(s, creator));
+    }
+
+    entry refund() {
+        require(this.ageDaa >= deadlineDaa);
+        require(tx.inputs.length == 1);
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - maxFee);
+    }
+}

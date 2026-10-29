@@ -1,0 +1,17 @@
+// Recurring payment (allowance / subscription), BROKEN. Expected: FAIL.
+// Each period anyone may release one installment to the recipient. The
+// installment is checked; the change that should stay locked is not.
+pragma silverscript ^0.1.0;
+
+contract Allowance(pubkey funder, pubkey recipient, int installment, int periodDaa, int maxFee) {
+    entry pay() {
+        require(this.ageDaa >= periodDaa);
+        require(tx.inputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(recipient)));
+        require(tx.outputs[0].value == installment);
+    }
+
+    entry cancel(sig s) {
+        require(checkSig(s, funder));
+    }
+}
