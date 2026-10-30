@@ -209,9 +209,8 @@ pub fn run(
                 v
             };
             for name in names {
-                if crate::baseline::out_of_time() {
-                    break;
-                }
+                // Not gated on the search deadline: a family attempt is a handful of
+                // runs, and it is the one way into these paths.
                 if let Some((status, notes)) = crate::family::explore(&t.contract, &name, &programs, judge) {
                     // A path no single-program spend opened is replaced; an explored
                     // one gains its family variant (a mint next to a heartbeat).

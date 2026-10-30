@@ -1,5 +1,10 @@
 # Changelog
 
+## Tool 0.5.1 (library 0.4.0)
+
+- Family spends are tried even when the search deadline has passed (they take a few runs, and they are the only way into those paths). On a slower server the web page skipped them.
+- Web project card: a program that was only attacked inside another file's family spend says so instead of "nothing could be attacked".
+
 ## Tool 0.5.0 (library 0.4.0)
 
 - Families: a path that refers to another program's covenant id is also tried together with a coin of that program, each with its own covenant id, creating coins of a third (a bridge, its mint authority, the token cells). The draft is repaired from the scripts' own execution logs: a failed comparison shows the value the script computed, often a whole output script, and the tool uses it. Journals with records (`int off = FIXED + LEN * i`, a count, per-record checks) get one record.

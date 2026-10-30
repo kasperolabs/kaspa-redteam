@@ -705,8 +705,10 @@ kaspa-redteam vault.sil -v</pre>
       const res = r.results || [], fnd = res.reduce((m, x) => m + (x.outcome.status === "found" ? x.outcome.findings.length : 0), 0);
       const run = res.filter(x => x.outcome.status !== "skipped").length;
       const gaps = ((r.context && r.context.spend_map) || []).filter(m => !m.explored).length;
-      const what = fnd ? `${fnd} finding${fnd > 1 ? "s" : ""}` : run === 0 ? "nothing could be attacked" : gaps ? `survived, ${gaps} path${gaps > 1 ? "s" : ""} unexplored` : "survived every attack";
-      return `<li><a href="#rep${k}"><b>${esc(r.web_subject || r.subject_name)}</b></a>: ${esc(what)} <span class="hint" style="display:inline">(${run} attack${run === 1 ? "" : "s"} run)</span></li>`;
+      const part = (r.notes || []).find(n => /of this file was spent and attacked as part of/.test(n));
+      const partOf = part ? (/as part of (\S+)'s path/.exec(part) || [])[1] : null;
+      const what = fnd ? `${fnd} finding${fnd > 1 ? "s" : ""}` : run === 0 && partOf ? `attacked as part of ${partOf}'s spend (see there)` : run === 0 ? "nothing could be attacked" : gaps ? `survived, ${gaps} path${gaps > 1 ? "s" : ""} unexplored` : "survived every attack";
+      return `<li><a href="#rep${k}"><b>${esc(r.web_subject || r.subject_name)}</b></a>: ${esc(what)}${run === 0 && partOf ? "" : ` <span class="hint" style="display:inline">(${run} attack${run === 1 ? "" : "s"} run)</span>`}</li>`;
     };
     let h = `<div class="card verdict ${total ? "bad" : ""}">
       <h2>Project: ${reps.length} contracts, ${total} finding${total === 1 ? "" : "s"}</h2>
