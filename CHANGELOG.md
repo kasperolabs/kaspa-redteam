@@ -1,5 +1,9 @@
 # Changelog
 
+## Tool 0.3.6 (library 0.3.0)
+
+- `--deadline SECONDS`: the search stops at the deadline, paths it had not cracked are reported as unexplored (time limit), and everything found is still attacked and reported. The web page sets it to two thirds of `--timeout`, so a slow contract returns a partial report instead of a timeout error.
+
 ## Tool 0.3.5 (library 0.3.0)
 
 - Web page: `HEAD` requests are answered like `GET` (they returned 404, and link-preview crawlers often ask `HEAD` first).

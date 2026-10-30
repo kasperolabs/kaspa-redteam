@@ -45,6 +45,9 @@ struct ScanArgs {
     /// Keep the default constructor values even when they leave paths unexplored
     #[arg(long)]
     no_tune: bool,
+    /// Stop searching after this many seconds and report what was found (unfinished paths are marked unexplored)
+    #[arg(long, value_name = "SECONDS")]
+    deadline: Option<u64>,
     #[command(flatten)]
     common: Common,
 }
@@ -178,6 +181,9 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
     let short =
         |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.display().to_string());
     let started = std::time::Instant::now();
+    if let Some(s) = a.deadline {
+        redteam_covenant::baseline::set_deadline(started + std::time::Duration::from_secs(s));
+    }
     let judge = redteam_covenant::sandbox::Judge::new();
     let (contract, paths, notes) = match &a.file {
         Some(file) => {

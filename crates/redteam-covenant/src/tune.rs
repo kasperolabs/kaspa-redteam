@@ -137,7 +137,7 @@ pub fn tune(file_name: &str, source: &str, overrides: &BTreeMap<String, String>,
     let base_explored = explored_names(&paths);
     let unexplored: Vec<String> =
         contract.entries.iter().map(|e| e.name.clone()).filter(|n| !base_explored.contains(n)).collect();
-    if unexplored.is_empty() {
+    if unexplored.is_empty() || baseline::out_of_time() {
         return Ok(Tuned { contract, paths, notes: vec![] });
     }
 
@@ -162,6 +162,9 @@ pub fn tune(file_name: &str, source: &str, overrides: &BTreeMap<String, String>,
     // Flags first: a `bool initialized = true` default closes `init` for good.
     for a in contract.args.iter().filter(|a| !overrides.contains_key(&a.name)) {
         let ArtifactValue::Bool(b) = a.value else { continue };
+        if baseline::out_of_time() {
+            break;
+        }
         let mut trial = overrides.clone();
         for (k, (v, _)) in &chosen {
             trial.insert(k.clone(), v.clone());
@@ -191,6 +194,9 @@ pub fn tune(file_name: &str, source: &str, overrides: &BTreeMap<String, String>,
                 }
             }
             for v in candidates(body, param, &consts, &others) {
+                if baseline::out_of_time() {
+                    break 'params;
+                }
                 if Some(&v) == current.get(param) {
                     continue;
                 }

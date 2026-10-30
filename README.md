@@ -42,6 +42,7 @@ kaspa-redteam vault.sil -v                     # every attack + the spend map
 kaspa-redteam vault.sil --arg owner=@alice     # choose constructor values
 kaspa-redteam vault.sil --arg cap=500000000    #   ints, 0xhex, true/false, @party
 kaspa-redteam vault.sil --no-tune              # keep default constructor values as they are
+kaspa-redteam vault.sil --deadline 60          # stop searching after 60 s, still attack and report what was found
 kaspa-redteam vault.sil --only sig,OUT-02      # packs or attack IDs
 kaspa-redteam vault.sil --json                 # for CI
 kaspa-redteam vault.sil --badge                # clean run: redteam-badge.svg + summary
@@ -67,7 +68,7 @@ kaspa-redteam serve --port 8790 --jobs 2 --timeout 120 --threads 4
 
 A single page where anyone can drop a `.sil` file (or paste it), optionally add constructor values or a baseline file, and get the same report the command line gives: verdict, findings with fix patterns, the spend map, every attack's result, and the repro files to download. The page is built into the binary; there is nothing else to install.
 
-Every scan runs as a separate child process of the same binary, in a fresh temporary folder that is deleted when it ends. Limits: `--timeout` seconds per scan (default 120), 2 GiB of memory, `--threads` worker threads per scan, one running scan per visitor and `--jobs` scans at once (others are told to try again). Uploads are capped at 1 MiB. Nothing is logged or kept.
+Every scan runs as a separate child process of the same binary, in a fresh temporary folder that is deleted when it ends. Limits: the search stops at two thirds of `--timeout` (`--deadline`) so the attacks still run and a report always comes back, and the scan is killed at `--timeout` seconds (default 120), 2 GiB of memory, `--threads` worker threads per scan, one running scan per visitor and `--jobs` scans at once (others are told to try again). Uploads are capped at 1 MiB. Nothing is logged or kept.
 
 It listens on `127.0.0.1` by default. For a public site, put a reverse proxy in front; the server reads the visitor's address from `X-Real-IP` or `X-Forwarded-For` when the request comes from the same machine. nginx:
 

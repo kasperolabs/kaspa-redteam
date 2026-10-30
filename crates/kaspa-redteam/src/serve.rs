@@ -332,7 +332,9 @@ fn scan(body: &[u8], s: &Shared) -> Result<Value> {
         std::fs::write(dir.join(&name), baseline)?;
         cmd.arg("--baseline").arg(&name);
     }
-    cmd.args(["--json", "--no-color", "--out", "findings"])
+    // Searching stops well before the hard limit so attacks still run and a report comes back.
+    let deadline = (s.opts.timeout * 2 / 3).max(5).to_string();
+    cmd.args(["--json", "--no-color", "--out", "findings", "--deadline", &deadline])
         .current_dir(&dir)
         .env("RAYON_NUM_THREADS", s.opts.threads.to_string())
         .env_remove("REDTEAM_DEBUG")

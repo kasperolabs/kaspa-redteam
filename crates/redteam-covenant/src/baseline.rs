@@ -21,6 +21,22 @@ use serde::Serialize;
 use silverscript_abi::{ArtifactValue, TypeArtifact};
 
 const MAX_TRIES_PER_PATH: usize = 25_000;
+
+/// Optional wall-clock deadline for the whole search (`--deadline`). Past it,
+/// every search stops and reports its path as unexplored, so a run always
+/// returns a report instead of being killed.
+static DEADLINE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+pub fn set_deadline(at: std::time::Instant) {
+    let _ = DEADLINE.set(at);
+}
+
+pub fn out_of_time() -> bool {
+    DEADLINE.get().is_some_and(|d| std::time::Instant::now() >= *d)
+}
+
+pub const TIME_LIMIT_REASON: &str =
+    "search stopped at the time limit; run kaspa-redteam on your own machine for no limit, or pass --arg values";
 const MAX_ARG_COMBOS: usize = 256;
 /// First pass: this many top-ranked argument combinations, each against
 /// this many of the most common output shapes, before the full search.
@@ -113,7 +129,7 @@ pub fn search_all(contract: &Contract, judge: &Judge) -> Vec<PathStatus> {
     let mut out = Vec::new();
     let mut states: Vec<Option<StateValues>> = vec![None];
     let mut i = 0;
-    while i < states.len() && i < MAX_STATES {
+    while i < states.len() && i < MAX_STATES && (i == 0 || !out_of_time()) {
         let st = states[i].clone();
         let mut level: Vec<PathStatus> =
             contract.entries.par_iter().map(|e| search_path(contract, judge, &e.name, st.as_ref())).collect();
@@ -170,7 +186,10 @@ pub fn search_path_budget(
     budget: usize,
 ) -> PathStatus {
     let first = search_layouts(contract, judge, entry_name, state, budget, false);
-    if first.baseline.is_some() || first.unexplored_reason.as_deref().is_some_and(|r| r.starts_with("parameter")) {
+    if first.baseline.is_some()
+        || out_of_time()
+        || first.unexplored_reason.as_deref().is_some_and(|r| r.starts_with("parameter"))
+    {
         return first;
     }
     // Fallback: the spender adds a coin of their own (outputs worth more than
@@ -289,6 +308,10 @@ fn search_layouts(
                             status.unexplored_reason = Some(format!(
                                 "no accepted spend in {budget} tries; pass --arg values or import a baseline (--baseline)"
                             ));
+                            return status;
+                        }
+                        if status.tries % 64 == 0 && out_of_time() {
+                            status.unexplored_reason = Some(TIME_LIMIT_REASON.into());
                             return status;
                         }
                         status.tries += 1;
@@ -825,7 +848,7 @@ fn search_cospend(
     // the shapes many, and one wrong argument must not use up the budget.
     for outs in &shapes {
         for (args, secrets) in &combos {
-            if tried >= BUDGET {
+            if tried >= BUDGET || (tried % 64 == 0 && out_of_time()) {
                 return None;
             }
             tried += 1;
