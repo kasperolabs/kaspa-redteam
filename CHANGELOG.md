@@ -1,5 +1,10 @@
 # Changelog
 
+## Tool 0.13.1 (library 0.9.0)
+
+- Under a deadline (the web page), every path still gets its first 512 search tries, and a follower entry its first 512 pairing tries, even when the time is already used up. Easy paths (a signed transfer, its delegate) are found in a handful; on a slower server the last file of a project lost them (`transfer_delegator` unexplored).
+- A token program's borrow paths are named after themselves (`transfer[borrow:threshold]`), so an unexplored plain `transfer` is no longer hidden behind them.
+
 ## Tool 0.13.0 (library 0.9.0)
 
 - Orders that keep the token's ids in their state and read the token by hand (byte slices, hand-built scripts):

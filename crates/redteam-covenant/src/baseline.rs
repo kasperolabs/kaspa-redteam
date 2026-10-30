@@ -366,7 +366,10 @@ fn search_layouts(
                             ));
                             return status;
                         }
-                        if status.tries % 64 == 0 && out_of_time() {
+                        // Past the deadline a path still gets its first few hundred
+                        // tries: the easy ones (a plain signed transfer) are found
+                        // in a handful, and a slower server must not lose them.
+                        if status.tries >= 512 && status.tries % 64 == 0 && out_of_time() {
                             status.unexplored_reason = Some(TIME_LIMIT_REASON.into());
                             return status;
                         }
@@ -1079,7 +1082,9 @@ fn search_cospend(
     // the shapes many, and one wrong argument must not use up the budget.
     for outs in &shapes {
         for (args, secrets) in &combos {
-            if tried >= BUDGET || (tried % 64 == 0 && out_of_time()) {
+            // A few hundred tries even past the deadline: a leader is already
+            // found, pairing is cheap, and without it the follower stays unexplored.
+            if tried >= BUDGET || (tried >= 512 && tried % 64 == 0 && out_of_time()) {
                 return None;
             }
             tried += 1;

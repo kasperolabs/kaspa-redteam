@@ -2530,8 +2530,8 @@ pub fn borrow_paths(c: &Contract, judge: &Judge) -> Vec<PathStatus> {
         });
         if !ok {
             out.push(PathStatus {
-                entry,
-                name: leader.name.clone(),
+                entry: entry.clone(),
+                name: entry.clone(),
                 state: Some(b.state.clone()),
                 baseline: None,
                 unexplored_reason: Some("a borrowed receive (KCC-20 section 5) the tool built was refused; the program may not support this borrow scheme".into()),
@@ -2557,8 +2557,8 @@ pub fn borrow_paths(c: &Contract, judge: &Judge) -> Vec<PathStatus> {
             }
         }
         out.push(PathStatus {
-            entry,
-            name: leader.name.clone(),
+            entry: entry.clone(),
+            name: entry.clone(),
             state: Some(b.state.clone()),
             baseline: Some(Baseline { plan: honest.unwrap(), signers: vec![], secrets: vec![], lock: None, variants }),
             unexplored_reason: None,
