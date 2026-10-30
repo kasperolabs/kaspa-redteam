@@ -7,8 +7,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # every attack: vulnerable fixture caught, fixed fixture silent
-      - run: cargo test --workspace
+      # every attack: vulnerable fixture caught, fixed fixture silent.
+      # Release build: the family tests check that every path is explored,
+      # and a debug build is too slow for the search's time limits.
+      - run: cargo test --workspace --release
       - run: cargo build --release
       # the corpus must keep its known results
       - run: ./target/release/kaspa-redteam corpus/minerdrip_v2.sil
