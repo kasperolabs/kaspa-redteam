@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 /// Version of the attack library. Bumped whenever attacks are added or changed,
 /// so old badges visibly age.
-pub const LIBRARY_VERSION: &str = "0.7.0";
+pub const LIBRARY_VERSION: &str = "0.8.0";
 pub const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What kind of thing an attack targets. New engines add a variant here.

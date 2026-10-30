@@ -1,5 +1,11 @@
 # Changelog
 
+## Tool 0.10.0 (library 0.8.0)
+
+- FAM-10: sweep coins sent to the covenant. A second coin of the token owned by the covenant's id (tokens sent to it by mistake, a second deposit) is spent next to the one the path uses, with the token program's follower entry, and its tokens go to the attacker. An ask order without a token input count check is caught; with `require(OpCovInputCount(tokenCovId) == 1)` it survives. The curve and the bridge survive it.
+- Branches: after `[n>0]`, the same branch is tried with the other program's coin holding more than the trade takes (`settle+transfer[n>0,rest kept]`: an order that keeps a remainder and continues), as its own path when the spend comes out different.
+- Repair: an output the script asks to be in the other program's family (`OpOutputCovenantId(out) == tokenCovId`) gets that family's binding. The honest spend's leftover KAS goes to a change output even when none was drafted.
+
 ## Tool 0.9.1 (library 0.7.0)
 
 - Fix: FAM-01 to FAM-04 no longer change the spender's own new coin (a buyer's tokens from an ask). Making it a look-alike only cheats the spender; 0.9.0 reported that as FAM-04 on `settle+transfer[n>0]`.

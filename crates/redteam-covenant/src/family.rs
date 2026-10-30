@@ -368,6 +368,24 @@ fn repair(d: &mut Draft, built: &crate::sandbox::Built, f: &FailedCheck, main: &
     };
     // A field of the coin spent alongside, as the input under test reads it
     // (`require(cell.owner_scheme == OWNER_COVENANT_ID)`, `cell.amount == SUPPLY - sold`).
+    // An output the script asks to be in the other program's family
+    // (`OpOutputCovenantId(out) == tokenCovId`): a coin of that program that
+    // carries no covenant id yet gets the one of the coin spent alongside.
+    if f.recent.iter().any(|r| r == "OpOutputCovenantId") {
+        let sib_id = match d.plan.inputs.get(d.sib) {
+            Some(InputSpec::Raw(r)) => r.entry.covenant_id,
+            _ => None,
+        };
+        if let Some(id) = sib_id {
+            if f.a.as_slice() == id.as_bytes().as_slice() || f.b.as_slice() == id.as_bytes().as_slice() {
+                let k = d.redeems.keys().copied().find(|k| d.plan.outputs.get(*k).is_some_and(|o| o.covenant.is_none()));
+                if let Some(k) = k {
+                    d.plan.outputs[k].covenant = Some(CovenantBinding::new(d.sib as u16, id));
+                    return true;
+                }
+            }
+        }
+    }
     // A lock time the input under test asks for (a refund after expiry).
     if f.op == "OpCheckLockTimeVerify" {
         if let Some(want) = num(&f.b) {
@@ -800,7 +818,7 @@ fn add_or_drop_coins(d: &mut Draft, f: &FailedCheck, sib: &Program, key: &secp25
 /// Tries to spend `entry` of `main` together with a coin of another program of
 /// the project, creating coins of a third. Returns the accepted spend.
 pub fn explore(main: &Contract, entry: &str, programs: &[Program], judge: &Judge) -> Option<(PathStatus, Vec<String>)> {
-    explore_seeded(main, entry, programs, judge, None)
+    explore_seeded(main, entry, programs, judge, None, 1)
 }
 
 /// The other branches of an entry that switches on a number argument
@@ -813,9 +831,19 @@ pub fn explore_branches(main: &Contract, entry: &str, programs: &[Program], judg
     let mut out = Vec::new();
     for p in me.params.iter().filter(|p| matches!(p.ty, TypeArtifact::Int)) {
         if flat.contains(&format!("if({}==0)", p.name)) {
-            if let Some((mut st, notes)) = explore_seeded(main, entry, programs, judge, Some((p.name.clone(), 1))) {
-                st.entry = format!("{}[{}>0]", st.entry, p.name);
-                out.push((st, notes));
+            let Some((mut st, notes)) = explore_seeded(main, entry, programs, judge, Some((p.name.clone(), 1)), 1) else { continue };
+            st.entry = format!("{}[{}>0]", st.entry, p.name);
+            let shape = |s: &PathStatus| s.baseline.as_ref().map(|b| b.plan.outputs.len());
+            let first = shape(&st);
+            out.push((st, notes));
+            // The other coin holding more than the trade takes (an order that
+            // keeps a remainder and continues): a path of its own when the
+            // spend comes out different.
+            if let Some((mut st2, notes2)) = explore_seeded(main, entry, programs, judge, Some((p.name.clone(), 1)), 3) {
+                if shape(&st2) != first {
+                    st2.entry = format!("{}[{}>0,rest kept]", st2.entry, p.name);
+                    out.push((st2, notes2));
+                }
             }
         }
     }
@@ -828,6 +856,7 @@ fn explore_seeded(
     programs: &[Program],
     judge: &Judge,
     seed: Option<(String, i64)>,
+    scale: i64,
 ) -> Option<(PathStatus, Vec<String>)> {
     let body = crate::tune::entry_body(&main.source, entry)?;
     let main_cov = cov_fields(main);
@@ -874,6 +903,11 @@ fn explore_seeded(
         // A coin the coin under test does not read (an order filled with
         // someone's tokens) belongs to whoever brings it: the attacker, who
         // signs for it.
+        if scale > 1 {
+            if let Some(ArtifactValue::Int(a)) = sib_state.get_mut("amount") {
+                *a = a.saturating_mul(scale);
+            }
+        }
         let keyed = !in_state && !body.contains("readInputState");
         if keyed {
             let attacker = main.wallets.attacker.xonly().to_vec();
@@ -1026,11 +1060,12 @@ fn explore_seeded(
                     let fee = d.plan.input_total().saturating_sub(d.plan.output_total());
                     if fee > 10 * BASE_FEE {
                         let mut tidy = d.plan.clone();
-                        if let Some(o) = tidy.outputs.iter_mut().find(|o| o.to == Dest::Key(KeyRef::Attacker)) {
-                            o.value += fee - BASE_FEE;
-                            if let (Verdict::Accepted { .. }, _) = judge.run(main, &tidy) {
-                                d.plan = tidy;
-                            }
+                        match tidy.outputs.iter_mut().find(|o| o.to == Dest::Key(KeyRef::Attacker)) {
+                            Some(o) => o.value += fee - BASE_FEE,
+                            None => tidy.outputs.push(OutputSpec::new(fee - BASE_FEE, Dest::Key(KeyRef::Attacker))),
+                        }
+                        if let (Verdict::Accepted { .. }, _) = judge.run(main, &tidy) {
+                            d.plan = tidy;
                         }
                     }
                     notes.push(format!(
@@ -1324,7 +1359,94 @@ fn variants(
             }
         }
     }
+    if let Some(v) = stray_coin(main, d, sib, programs) {
+        if let Some(p) = finish(v) {
+            out.push(("FAM-10", "a second coin the coin under test owns, swept to the attacker".into(), p,
+                format!("a second coin of {} owned by this covenant's id (tokens someone sent to it, or a second deposit) was spent in the same transaction and its tokens went to the attacker, and the transaction was accepted. The covenant checked only the coin it was pointed at. Tokens sent to its id can be taken by anyone; if anyone is meant to sweep them, this is by design.", sib.file)));
+        }
+    }
     out
+}
+
+/// A second coin of the other program owned by the coin under test (its
+/// covenant id as owner), spent with the follower entry next to the one the
+/// spend uses, its tokens paid to the attacker in a coin of their own.
+fn stray_coin(main: &Contract, d: &Draft, sib: &Program, programs: &[Program]) -> Option<Draft> {
+    let _ = programs;
+    let st = d.sib_state.clone()?;
+    let main_id = crate::sandbox::sandbox_covenant_id();
+    let owned = cov_fields(&sib.contract).iter().any(|f| st.get(f) == Some(&ArtifactValue::Bytes(main_id.as_bytes().to_vec())));
+    if !owned || d.delegate.is_some() || d.sib_key.is_some() {
+        return None;
+    }
+    let follower = sib.contract.entries.iter().find(|e| {
+        e.name != d.sib_entry
+            && !e.params.is_empty()
+            && e.params.iter().all(|p| norm(&p.name).contains("witness"))
+            && crate::tune::entry_body(&sib.contract.source, &e.name).is_some_and(|b| b.contains("!= this.activeInputIndex"))
+    })?;
+    let stray_amount = 100_000_000i64;
+    let mut stray = st.clone();
+    stray.insert("amount".into(), ArtifactValue::Int(stray_amount));
+    let redeem = encode_state(&sib.contract, &stray)?;
+    let artifact = sib.contract.artifact.as_ref()?;
+    // Owned by a covenant id: the witness is empty (no path byte for a follower).
+    let args: Vec<ArtifactValue> = follower.params.iter().map(|_| ArtifactValue::Bytes(vec![])).collect();
+    let mut script = silverscript_abi::encode_contract_entry_sig_script(artifact, &sib.contract.contract_name, &follower.name, &args).ok()?;
+    script.extend(crate::sandbox::push_data(&redeem).ok()?);
+    let id = Hash::from_bytes(sib.cov_id);
+    let value = 100_000_000u64;
+    let mut v = Draft {
+        plan: d.plan.clone(),
+        sib: d.sib,
+        sib_entry: d.sib_entry.clone(),
+        sib_args: vec![],
+        redeems: d.redeems.clone(),
+        repaired: d.repaired.clone(),
+        sib_state: d.sib_state.clone(),
+        delegate: None,
+        sib_key: None,
+        last_fix: d.last_fix,
+    };
+    v.plan.inputs.insert(
+        d.sib + 1,
+        InputSpec::Raw(RawInput {
+            outpoint: None,
+            signature_script: script,
+            sequence: 0,
+            sig_op_count: 0,
+            compute_budget: 2_000,
+            entry: UtxoEntry::new(value, pay_to_script_hash_script(&redeem), UTXO_DAA, false, Some(id)),
+            target: false,
+            signed: false,
+            resign: None,
+        }),
+    );
+    // The swept tokens, in a coin the attacker owns.
+    let attacker = main.wallets.attacker.xonly().to_vec();
+    let mut mine = st;
+    mine.insert("amount".into(), ArtifactValue::Int(stray_amount));
+    for f in cov_fields(&sib.contract) {
+        mine.insert(f, ArtifactValue::Bytes(attacker.clone()));
+    }
+    if let Some((sel, _)) = cov_branch(&sib.contract) {
+        let p2pk = source_consts(&sib.contract.source)
+            .into_iter()
+            .find(|(n, _)| n.contains("P2PK") && !n.contains("P2PKH"))
+            .map(|(_, v)| v)
+            .unwrap_or(ArtifactValue::Byte(0));
+        mine.insert(sel, p2pk);
+    }
+    let r2 = encode_state(&sib.contract, &mine)?;
+    let k = v.plan.outputs.len();
+    v.plan.outputs.push(OutputSpec {
+        value,
+        to: Dest::Raw(pay_to_script_hash_script(&r2)),
+        covenant: Some(CovenantBinding::new(d.sib as u16, id)),
+        own: true,
+    });
+    v.redeems.insert(k, r2);
+    Some(v)
 }
 
 fn main_entry(d: &Draft) -> String {

@@ -98,3 +98,8 @@ fam!(FAM09, "FAM-09", "Take tokens without paying",
     "require(tx.outputs[next].value >= tx.inputs[this.activeInputIndex].value + price(sold, m));",
     "Nothing but a price check stands between anyone and the program's tokens. Without it, the first spender after deployment takes the supply.",
     48);
+fam!(FAM10, "FAM-10", "Sweep coins sent to the covenant",
+    "a second coin of the token owned by the covenant's id (tokens sent to it by mistake, a second deposit) spent and taken in a normal spend",
+    "require(OpCovInputCount(tokenCovId) == 1);  // or count and return every coin the covenant owns",
+    "Someone sends tokens to an order's or a market's covenant id, or a second deposit lands there. The next spender includes that coin and takes its tokens, because the contract checks only the coin it is pointed at.",
+    49);
