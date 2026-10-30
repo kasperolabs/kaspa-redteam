@@ -9,7 +9,7 @@ use redteam_covenant::sandbox::Judge;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-fn run(dir: &str) -> Vec<(String, Vec<String>, usize)> {
+fn run(dir: &str) -> Vec<(String, Vec<String>, usize, Vec<String>)> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/family").join(dir);
     let files: Vec<ProjectFile> = ["KCC20.sil", "BridgeMint.sil", "bridge.sil"]
         .iter()
@@ -25,7 +25,11 @@ fn run(dir: &str) -> Vec<(String, Vec<String>, usize)> {
                 .iter()
                 .filter(|x| x.id.starts_with("FAM-") && !matches!(x.outcome, redteam_core::Outcome::Skipped { .. }))
                 .count();
-            (r.subject_name.clone(), r.findings().map(|f| f.id.clone()).collect(), fam_run)
+            let gaps = r.context["spend_map"]
+                .as_array()
+                .map(|m| m.iter().filter(|x| x["explored"] != true).map(|x| x["path"].to_string()).collect())
+                .unwrap_or_default();
+            (r.subject_name.clone(), r.findings().map(|f| f.id.clone()).collect(), fam_run, gaps)
         })
         .collect()
 }
@@ -36,6 +40,10 @@ fn bridge_family() {
     let bridge = fixed.iter().find(|r| r.0 == "bridge.sil").unwrap();
     assert_eq!(bridge.2, 7, "every FAM attack should run on the mint and the genesis: {fixed:?}");
     assert!(bridge.1.is_empty(), "the real bridge should survive: {:?}", bridge.1);
+    // Every path explored: the bridge's (heartbeat, mint, genesis) and the minted coin's own.
+    assert!(bridge.3.is_empty(), "bridge gaps: {:?}", bridge.3);
+    let cell = fixed.iter().find(|r| r.0 == "KCC20.sil").unwrap();
+    assert!(cell.3.is_empty(), "KCC20 gaps (minted coin spends): {:?}", cell.3);
 
     let vuln = run("vulnerable");
     let bridge = vuln.iter().find(|r| r.0 == "bridge.sil").unwrap();

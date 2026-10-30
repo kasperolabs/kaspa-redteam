@@ -362,9 +362,15 @@ fn search_layouts(
                         let mut inputs = (*extra).clone();
                         inputs.insert(*cov_pos, cov);
                         let plan = SpendPlan::simple(inputs, outs.clone(), t.lock_time, pov_daa, block_time);
-                        let (verdict, _) = judge.run(contract, &plan);
+                        let (verdict, built) = judge.run(contract, &plan);
                         if crate::debug_on() && (status.tries <= 3 || status.tries % 5000 == 0) {
                             eprintln!("search {entry_name} try {}: {verdict:?}", status.tries);
+                            if let Some(b) = &built {
+                                if let Some(f) = (0..plan.inputs.len()).find_map(|i| crate::sandbox::trace_failure(b, i)) {
+                                    let h = |v: &[u8]| faster_hex::hex_string(&v[..v.len().min(24)]);
+                                    eprintln!("  input {} {} a={} b={}", f.input, f.op, h(&f.a), h(&f.b));
+                                }
+                            }
                         }
                         if verdict.accepted() {
                             let lock = if t.lock_time > 0 {

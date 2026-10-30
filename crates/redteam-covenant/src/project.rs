@@ -265,14 +265,29 @@ pub fn run(
         let ov = overrides_for(&files[i].source, overrides)?;
         let Ok(mut c) = Contract::load_linked(&files[i].name, &files[i].source, &ov, &per_file[i]) else { continue };
         let Some(state) = crate::family::decode_state(&c, &redeem) else { continue };
-        // The owner the data named: a key the tool holds ("depositor").
-        c.wallets.party("depositor");
+        // The owner the data named: a key the tool holds ("depositor"), tried
+        // first; and the minted state is where this program's coins start, so
+        // a second coin spent alongside (a delegate) is a minted one too.
+        let i_dep = c.wallets.party("depositor");
+        let dep = c.wallets.parties.remove(i_dep);
+        c.wallets.parties.insert(0, dep);
+        // The program's own bytes carry the minted state, so its coins are the
+        // minted coin exactly (a delegate spent alongside is one more of them).
+        if let Ok(script) = c.script_for(Some(&state)) {
+            if let Some(a) = c.artifact.as_mut() {
+                if let Some(cc) = a.contracts.values_mut().next() {
+                    cc.compiled.bytecode = script.clone();
+                }
+            }
+            c.bytecode = script;
+        }
+        c.initial_state = Some(state.clone());
         let mut paths: Vec<crate::baseline::PathStatus> = Vec::new();
         // A short grace of its own, so this step is not starved by the overall deadline.
-        crate::baseline::set_file_deadline(Some(std::time::Instant::now() + std::time::Duration::from_secs(12)));
-        for e in c.entries.clone() {
-            let mut p = crate::baseline::search_path_budget(&c, judge, &e.name, Some(&state), 4_000);
-            p.entry = format!("minted:{}", e.name);
+        crate::baseline::set_file_deadline(Some(std::time::Instant::now() + std::time::Duration::from_secs(20)));
+        // The full search: it pairs a delegate with a leader spend it found.
+        for mut p in crate::baseline::search_all(&c, judge) {
+            p.entry = format!("minted:{}", p.entry);
             paths.push(p);
         }
         crate::baseline::set_file_deadline(None);

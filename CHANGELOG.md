@@ -1,10 +1,15 @@
 # Changelog
 
+## Tool 0.6.1 (library 0.5.0)
+
+- Minted coins: both KCC-20 paths explored (`minted:transfer`, and `minted:transfer_delegator` pairing two minted coins); the program's own bytes carry the minted state. The ETH bridge project now has no unexplored path in any file (tests/family.rs checks it).
+- Search debug output (`REDTEAM_DEBUG=1`) shows the comparison a rejected try failed on.
+
 ## Tool 0.6.0 (library 0.5.0)
 
 - Genesis: a path that starts a new covenant family is tried with a new coin of a project program, its covenant id derived as consensus does (`SpendPlan.genesis`). The ETH bridge's `init` is now explored, so the bridge has no unexplored paths.
 - FAM-07: start the family a second time.
-- Minted coins are spent by their owner with their own program's entries and attacked there (`minted:...` paths); a coin no entry can move is reported. This step gets a short time of its own under `--deadline`.
+- Minted coins are spent by their owner with their own program's entries and attacked there (`minted:...` paths), with the program's full search, so a delegate spend pairs two minted coins; a coin no entry can move is reported. This step gets up to 20 s of its own under `--deadline`; the web page stops a project's search at half its timeout to leave room.
 - A file deadline, when set, replaces the overall one.
 
 ## Tool 0.5.1 (library 0.4.0)

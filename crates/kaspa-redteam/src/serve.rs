@@ -399,7 +399,9 @@ fn scan(body: &[u8], s: &Shared) -> Result<Value> {
         cmd.arg("--baseline").arg(&name);
     }
     // Searching stops well before the hard limit so attacks still run and a report comes back.
-    let deadline = (s.opts.timeout * 2 / 3).max(5).to_string();
+    // A project also spends what it minted after the search (up to 20 s of its
+    // own), so its search stops earlier.
+    let deadline = if project.len() > 1 { s.opts.timeout / 2 } else { s.opts.timeout * 2 / 3 }.max(5).to_string();
     cmd.args(["--json", "--no-color", "--out", "findings", "--deadline", &deadline])
         .current_dir(&dir)
         .env("RAYON_NUM_THREADS", s.opts.threads.to_string())
