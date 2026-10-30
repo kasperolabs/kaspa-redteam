@@ -159,8 +159,14 @@ pub fn run(
     }
     let (links, per_file) = detect(files, overrides)?;
     let mut reports = Vec::new();
-    for (f, l) in files.iter().zip(per_file.iter()) {
+    let n = files.len();
+    for (i, (f, l)) in files.iter().zip(per_file.iter()).enumerate() {
         let started = std::time::Instant::now();
+        // Under a deadline, each file gets an equal share of what is left, so
+        // the first files cannot use up the time of the last.
+        crate::baseline::set_file_deadline(
+            crate::baseline::deadline().map(|d| started + d.saturating_duration_since(started) / (n - i) as u32),
+        );
         let ov = overrides_for(&f.source, overrides)?;
         let t = crate::tune::tune_linked(&f.name, &f.source, &ov, l, judge)?;
         let mut notes = t.notes;
@@ -172,5 +178,6 @@ pub fn run(
         }
         reports.push(crate::run_paths_timed(&t.contract, only, t.paths, vec![], notes, started));
     }
+    crate::baseline::set_file_deadline(None);
     Ok((links, reports))
 }

@@ -1,5 +1,10 @@
 # Changelog
 
+## Tool 0.4.9 (library 0.3.2)
+
+- Projects on the web page: the project card lists every contract with its verdict and a link to its report, so the second and third contracts are not lost below the first one's tables.
+- Projects under `--deadline` (the web page): each file gets an equal share of the time that is left, so the first files cannot use up the search time of the last.
+
 ## Tool 0.4.8 (library 0.3.2)
 
 - ZK covenants: the Groth16 verifying key a script pushes (RISC Zero's fixed key, or the contract's own) is swapped in the sandbox for a test key whose one test proof verifies for any public inputs. Proof arguments get that proof; journal arguments are laid out from the entry's own `journal.slice(a, b) == value` checks. Proof-checked paths become explorable; a report note says what this does and does not test. Version-1 transactions with a compute budget for the verification.

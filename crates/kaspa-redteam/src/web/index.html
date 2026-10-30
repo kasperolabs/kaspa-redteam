@@ -628,7 +628,7 @@ kaspa-redteam vault.sil -v</pre>
     const name = rep.web_subject || rep.subject_name;
     if (project) title = `${name}: ${title.charAt(0).toLowerCase() + title.slice(1)}`;
 
-    let h = `<div class="card verdict ${cls}"${project ? ' style="margin-top:28px"' : ""}>
+    let h = `<div class="card verdict ${cls}"${project ? ` id="rep${k}" style="margin-top:28px;scroll-margin-top:16px"` : ""}>
       <h2>${esc(title)}</h2>
       <div class="sub">${esc(name)}${rep.context && rep.context.contract ? " · contract " + esc(rep.context.contract) : ""} · ${(rep.millis / 1000).toFixed(1)} s · library v${esc(rep.library_version)}</div>
       <p style="margin:12px 0 0">${esc(sub)}</p>
@@ -700,11 +700,21 @@ kaspa-redteam vault.sil -v</pre>
     const reps = proj.reports || [];
     const total = reps.reduce((n, r) => n + (r.results || []).reduce((m, x) => m + (x.outcome.status === "found" ? x.outcome.findings.length : 0), 0), 0);
     const links = (proj.project && proj.project.links) || [];
+    // One line per contract up top, so nobody has to scroll to find the others.
+    const line = (r, k) => {
+      const res = r.results || [], fnd = res.reduce((m, x) => m + (x.outcome.status === "found" ? x.outcome.findings.length : 0), 0);
+      const run = res.filter(x => x.outcome.status !== "skipped").length;
+      const gaps = ((r.context && r.context.spend_map) || []).filter(m => !m.explored).length;
+      const what = fnd ? `${fnd} finding${fnd > 1 ? "s" : ""}` : run === 0 ? "nothing could be attacked" : gaps ? `survived, ${gaps} path${gaps > 1 ? "s" : ""} unexplored` : "survived every attack";
+      return `<li><a href="#rep${k}"><b>${esc(r.web_subject || r.subject_name)}</b></a>: ${esc(what)} <span class="hint" style="display:inline">(${run} attack${run === 1 ? "" : "s"} run)</span></li>`;
+    };
     let h = `<div class="card verdict ${total ? "bad" : ""}">
       <h2>Project: ${reps.length} contracts, ${total} finding${total === 1 ? "" : "s"}</h2>
       <div class="sub">${esc(((proj.project && proj.project.files) || []).join(" · "))}</div>
       <p style="margin:12px 0 6px">How the contracts refer to each other, as the tool understood it:</p>
       <ul class="notes" style="padding:0 0 0 20px">${links.length ? links.map(l => `<li><b>${esc(l.from)}</b> <code>${esc(l.via)}</code> ${l.kind === "address" ? "pays to the address of" : "pins the program of"} <b>${esc(l.to)}</b></li>`).join("") : "<li>no links found; each contract was attacked on its own</li>"}</ul>
+      <p style="margin:12px 0 6px">Each contract:</p>
+      <ul class="notes" style="padding:0 0 0 20px">${reps.map(line).join("")}</ul>
     </div>`;
     reps.forEach((r, k) => { h += reportHtml(r, files, k, true); });
     $("result").innerHTML = h;

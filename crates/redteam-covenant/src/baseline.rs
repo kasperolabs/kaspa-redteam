@@ -26,13 +26,25 @@ const MAX_TRIES_PER_PATH: usize = 25_000;
 /// every search stops and reports its path as unexplored, so a run always
 /// returns a report instead of being killed.
 static DEADLINE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+/// A project's share of the deadline for the file being searched now.
+static FILE_DEADLINE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
 
 pub fn set_deadline(at: std::time::Instant) {
     let _ = DEADLINE.set(at);
 }
 
+pub fn deadline() -> Option<std::time::Instant> {
+    DEADLINE.get().copied()
+}
+
+/// Limits the search of one file of a project (None: only the overall deadline).
+pub fn set_file_deadline(at: Option<std::time::Instant>) {
+    *FILE_DEADLINE.lock().unwrap() = at;
+}
+
 pub fn out_of_time() -> bool {
-    DEADLINE.get().is_some_and(|d| std::time::Instant::now() >= *d)
+    let now = std::time::Instant::now();
+    DEADLINE.get().is_some_and(|d| now >= *d) || FILE_DEADLINE.lock().unwrap().is_some_and(|d| now >= d)
 }
 
 pub const TIME_LIMIT_REASON: &str =
