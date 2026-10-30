@@ -266,6 +266,14 @@ fn search_layouts(
     let mut coin_values = vec![COVENANT_VALUE];
     // A coin the entry caps or fixes in its own source
     // (`tx.inputs[this.activeInputIndex].value <= a + b + fee`) comes first.
+    // Payouts the entry fixes from constructor values (`tx.outputs[1].value ==
+    // driverAmount`): a coin that holds them all plus a fee.
+    if let Some(total) = pinned_payout_total(contract, entry_name) {
+        let v = total + BASE_FEE;
+        if !coin_values.contains(&v) {
+            coin_values.insert(0, v);
+        }
+    }
     for v in input_value_caps(contract, entry_name) {
         if !coin_values.contains(&v) {
             coin_values.insert(0, v);
@@ -1069,4 +1077,34 @@ fn input_value_caps(contract: &Contract, entry_name: &str) -> Vec<u64> {
         }
     }
     out
+}
+
+/// Sum of the output values an entry pins to a constructor int or literal,
+/// one per output index.
+fn pinned_payout_total(contract: &Contract, entry_name: &str) -> Option<u64> {
+    let body = crate::tune::entry_body(&contract.source, entry_name)?;
+    let ints: std::collections::BTreeMap<&str, i64> = contract
+        .args
+        .iter()
+        .filter_map(|a| match &a.value {
+            ArtifactValue::Int(n) => Some((a.name.as_str(), *n)),
+            _ => None,
+        })
+        .collect();
+    let mut by_index: std::collections::BTreeMap<String, i64> = Default::default();
+    for line in body.lines() {
+        let Some(at) = line.find("tx.outputs[") else { continue };
+        let rest = &line[at + 11..];
+        let Some(close) = rest.find(']') else { continue };
+        let idx = rest[..close].trim().to_string();
+        let Some(v) = rest[close + 1..].trim_start().strip_prefix(".value") else { continue };
+        let Some(expr) = v.trim_start().strip_prefix("==") else { continue };
+        let term = expr.split(|c| c == ')' || c == ';').next().unwrap_or("").trim();
+        if let Some(n) = term.replace('_', "").parse::<i64>().ok().or_else(|| ints.get(term).copied()) {
+            if n > 0 {
+                by_index.insert(idx, n);
+            }
+        }
+    }
+    (by_index.len() >= 2).then(|| by_index.values().sum::<i64>() as u64)
 }

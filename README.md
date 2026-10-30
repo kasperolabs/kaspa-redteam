@@ -41,6 +41,7 @@ kaspa-redteam vault.sil                        # attack it
 kaspa-redteam vault.sil -v                     # every attack + the spend map
 kaspa-redteam vault.sil --arg owner=@alice     # choose constructor values
 kaspa-redteam vault.sil --arg cap=500000000    #   ints, 0xhex, true/false, @party
+kaspa-redteam vault.sil --args deploy.json     # constructor values from the JSON you deploy with
 kaspa-redteam vault.sil --no-tune              # keep default constructor values as they are
 kaspa-redteam vault.sil --deadline 60          # stop searching after 60 s, still attack and report what was found
 kaspa-redteam vault.sil --only sig,OUT-02      # packs or attack IDs
@@ -59,6 +60,18 @@ kaspa-redteam serve --port 8790                # the web page: drop a .sil in a 
 Common flags: `--out DIR` (where finding files go, default `findings/`), `--no-color`, and `--only`, `--json`, `-v`, `--badge` work on `node` runs too. `kaspa-redteam --help` and `kaspa-redteam <command> --help` list everything.
 
 Exit codes: `0` clean, `1` findings, `2` error.
+
+### Constructor values from your deploy file
+
+`--args FILE` reads the same values you deploy with, so the contract is tested with your numbers, hashes and templates instead of the tool's defaults. `--arg` still wins over the file. On the web page, paste the JSON into the constructor values box.
+
+```
+{ "cap": 500000000, "feeScript": "0x...", "tokenTemplate": "0x..." }     by name
+[ "0x...", 500000000, true ]                                             in constructor order (one contract)
+{ "constructorArgs": { ... } }  or  [ { "name": "cap", "value": 500000000 } ]
+```
+
+The tool can only spend what it holds the secrets for, so a few values are played by the tool, and the report lists which: `pubkey` parameters become test keys of the same name (`@owner`), and a `byte[32]` used as a key, a key hash or a hash lock gets a test key or the hash of a test secret. Everything else is used exactly as given.
 
 ### Older SilverScript
 

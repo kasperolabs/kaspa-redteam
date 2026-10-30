@@ -241,7 +241,7 @@ footer { margin: 64px 0 40px; padding-top: 18px; border-top: 1px solid var(--lin
       <div>
         <label class="f" for="args">Constructor values <span>(optional)</span></label>
         <textarea id="args" rows="3" spellcheck="false" placeholder="owner=@alice&#10;cap=500000000"></textarea>
-        <div class="hint">One <code>NAME=VALUE</code> per line: numbers, <code>0xhex</code>, <code>true</code>/<code>false</code>, or <code>@name</code> for a test key. Leave empty and the tool picks.</div>
+        <div class="hint">One <code>NAME=VALUE</code> per line: numbers, <code>0xhex</code>, <code>true</code>/<code>false</code>, or <code>@name</code> for a test key. Or paste the JSON you deploy with (<code>{"cap": 500000000, ...}</code>). Leave empty and the tool picks.</div>
       </div>
       <div>
         <details class="adv">
@@ -410,13 +410,15 @@ kaspa-redteam vault.sil -v</pre>
     if (go.disabled || running) return;
     running = true; go.disabled = true; showRunning();
     $("status").scrollIntoView({ behavior: "smooth", block: "center" });
-    const args = $("args").value.split("\n").map(s => s.trim()).filter(Boolean);
+    const rawArgs = $("args").value.trim();
+    const argsJson = /^[\[{]/.test(rawArgs) ? rawArgs : "";
+    const args = argsJson ? [] : rawArgs.split("\n").map(s => s.trim()).filter(Boolean);
     try {
       const r = await fetch("/api/scan", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(state.more.length
-          ? { files: [{ filename: state.name, source: state.source }].concat(state.more.map(f => ({ filename: f.name, source: f.source }))), args }
-          : { filename: state.name, source: state.source, args, baseline: state.baseline, baseline_name: state.baselineName }),
+          ? { files: [{ filename: state.name, source: state.source }].concat(state.more.map(f => ({ filename: f.name, source: f.source }))), args, args_json: argsJson }
+          : { filename: state.name, source: state.source, args, args_json: argsJson, baseline: state.baseline, baseline_name: state.baselineName }),
       });
       let j; try { j = await r.json(); } catch (_) { j = { error: `The server answered ${r.status}.` }; }
       if (!r.ok || j.error) showError(j.error || `The server answered ${r.status}.`);

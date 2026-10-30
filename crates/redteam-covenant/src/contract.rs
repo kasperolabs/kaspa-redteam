@@ -388,6 +388,17 @@ enum HashUse {
     SecretBlake2b,
 }
 
+/// What the tool must play itself for a `byte[32]` parameter, because a real
+/// value would need a secret it does not have: a key, a key hash, a hash lock.
+pub fn played_by_tool(source: &str, name: &str) -> Option<&'static str> {
+    match hash_use(source, name) {
+        HashUse::Key => Some("key"),
+        HashUse::PubkeyBlake2b => Some("key hash"),
+        HashUse::SecretSha256 | HashUse::SecretBlake2b => Some("hash lock"),
+        HashUse::P2shTarget => None,
+    }
+}
+
 /// Guesses what a `byte[32]` constructor parameter is a hash of by reading the
 /// source lines that mention it: `blake2b(byte[](pk)) == owner` is a pubkey
 /// hash, `sha256(secret) == hash` a hash lock. Wrong guesses only leave a path

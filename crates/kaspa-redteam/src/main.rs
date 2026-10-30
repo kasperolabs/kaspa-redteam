@@ -39,6 +39,9 @@ struct ScanArgs {
     /// Constructor value: name=123 | name=0xhex | name=true | name=@party (test key)
     #[arg(long = "arg", value_name = "NAME=VALUE")]
     args: Vec<String>,
+    /// Constructor values from a JSON file (the one you deploy with): {"name": value} or [values in order]. --arg wins.
+    #[arg(long = "args", value_name = "FILE")]
+    args_file: Option<PathBuf>,
     /// Honest transactions to attack, from your own harness (format: BASELINE.md). Repeatable.
     #[arg(long = "baseline", value_name = "FILE")]
     baselines: Vec<PathBuf>,
@@ -175,12 +178,26 @@ fn real_main() -> Result<ExitCode> {
 
 fn scan(a: &ScanArgs) -> Result<ExitCode> {
     let mut overrides = BTreeMap::new();
+    let mut file_notes = Vec::new();
+    if let Some(path) = &a.args_file {
+        let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        let mut sources = Vec::new();
+        for f in &a.files {
+            let src = std::fs::read_to_string(f).with_context(|| format!("read {}", f.display()))?;
+            let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            sources.push(redteam_covenant::legacy::prepare(&name, &src)?.0);
+        }
+        let refs: Vec<&str> = sources.iter().map(String::as_str).collect();
+        let (vals, notes) = redteam_covenant::ctor_file::load(&raw, &refs).with_context(|| format!("{}", path.display()))?;
+        overrides = vals;
+        file_notes = notes;
+    }
     for kv in &a.args {
         let (k, v) = kv.split_once('=').with_context(|| format!("--arg {kv}: expected NAME=VALUE"))?;
         overrides.insert(k.trim().to_string(), v.trim().to_string());
     }
     if a.files.len() > 1 {
-        return project(a, &overrides);
+        return project(a, &overrides, file_notes);
     }
     let short =
         |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.display().to_string());
@@ -196,9 +213,11 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
             if a.no_tune {
                 let c = redteam_covenant::contract::Contract::load(&short(file), &source, &overrides)?;
                 let p = redteam_covenant::baseline::search_all(&c, &judge);
+                legacy.extend(file_notes);
                 (c, p, legacy)
             } else {
                 let t = redteam_covenant::tune::tune(&short(file), &source, &overrides, &judge)?;
+                legacy.extend(file_notes);
                 legacy.extend(t.notes);
                 (t.contract, t.paths, legacy)
             }
@@ -225,7 +244,7 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
 
 /// Several files: one project, each contract searched and attacked with its
 /// links to the others, one combined report.
-fn project(a: &ScanArgs, overrides: &BTreeMap<String, String>) -> Result<ExitCode> {
+fn project(a: &ScanArgs, overrides: &BTreeMap<String, String>, file_notes: Vec<String>) -> Result<ExitCode> {
     if !a.baselines.is_empty() {
         bail!("--baseline works with one .sil file at a time for now");
     }
@@ -244,7 +263,8 @@ fn project(a: &ScanArgs, overrides: &BTreeMap<String, String>) -> Result<ExitCod
     }
     let judge = redteam_covenant::sandbox::Judge::new();
     let (links, mut reports) = redteam_covenant::project::run(&files, overrides, &a.common.only, &judge)?;
-    for (r, notes) in reports.iter_mut().zip(legacy) {
+    for (r, mut notes) in reports.iter_mut().zip(legacy) {
+        notes.extend(file_notes.iter().cloned());
         r.notes.splice(0..0, notes);
     }
     let c = &a.common;

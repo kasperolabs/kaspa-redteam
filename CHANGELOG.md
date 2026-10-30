@@ -1,5 +1,10 @@
 # Changelog
 
+## Tool 0.4.3 (library 0.3.1)
+
+- `--args FILE`: constructor values from the JSON a project deploys with (by name, in order, or wrapped in `constructorArgs`). Keys, key hashes and hash locks are played by test keys and secrets, and the report says which; every other value is used exactly. The web page takes the same JSON pasted into the constructor values box.
+- Search: an entry that pins several payouts to constructor values (`tx.outputs[1].value == driverAmount`) is tried with a coin that holds them all plus a fee.
+
 ## Tool 0.4.2 (library 0.3.1)
 
 - Older SilverScript: a file that does not parse is reported as a syntax error, in those words, with what changed in the language when the tool recognizes it. Files using struct literals from before Aug 3, 2026 (`State s = { .. }`, SilverScript PR #193) are tested rewritten in current syntax, with a note in the report saying so and that deployed bytecode from an older compiler may differ.

@@ -361,6 +361,15 @@ fn scan(body: &[u8], s: &Shared) -> Result<Value> {
     for a in &args {
         cmd.arg("--arg").arg(a);
     }
+    // Constructor values pasted as JSON (the file a project deploys with).
+    let args_json = req.get("args_json").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if !args_json.is_empty() {
+        if args_json.len() > 64 * 1024 {
+            anyhow::bail!("The constructor values are over 64 KiB.");
+        }
+        std::fs::write(dir.join("constructor-values.json"), args_json)?;
+        cmd.arg("--args").arg("constructor-values.json");
+    }
     if !baseline.trim().is_empty() && project.is_empty() {
         let name = safe_name(req.get("baseline_name").and_then(|v| v.as_str()).unwrap_or(""), ".json", "baseline.json");
         std::fs::write(dir.join(&name), baseline)?;

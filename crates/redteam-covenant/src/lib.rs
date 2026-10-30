@@ -10,6 +10,7 @@
 pub mod attacks;
 pub mod baseline;
 pub mod contract;
+pub mod ctor_file;
 pub mod import;
 pub mod legacy;
 pub mod project;
