@@ -232,7 +232,8 @@ fn search_layouts(
     let has_datasig = entry.params.iter().any(|p| matches!(p.ty, TypeArtifact::Datasig));
     let mut per_param: Vec<Vec<(ArgRecipe, Option<String>)>> = Vec::new();
     for p in &entry.params {
-        match candidates(contract, &p.name, &p.ty, has_datasig, msg_arg) {
+        let body = crate::tune::entry_body(&contract.source, entry_name).unwrap_or("");
+        match candidates(contract, body, &p.name, &p.ty, has_datasig, msg_arg) {
             Ok(c) => per_param.push(c),
             Err(why) => {
                 status.unexplored_reason = Some(format!("parameter `{}`: {why}", p.name));
@@ -281,7 +282,7 @@ fn search_layouts(
         .into_iter()
         .map(|(cv, extra, pos)| {
             let extra_value: u64 = extra.iter().map(|i| i.value()).sum();
-            (cv, extra, pos, output_candidates(contract, cv, extra_value, state))
+            (cv, extra, pos, output_candidates_for(contract, Some(entry_name), cv, extra_value, state))
         })
         .collect();
 
@@ -325,7 +326,11 @@ fn search_layouts(
                         let mut inputs = (*extra).clone();
                         inputs.insert(*cov_pos, cov);
                         let plan = SpendPlan::simple(inputs, outs.clone(), t.lock_time, pov_daa, block_time);
-                        if judge.run(contract, &plan).0.accepted() {
+                        let (verdict, _) = judge.run(contract, &plan);
+                        if crate::debug_on() && (status.tries <= 3 || status.tries % 5000 == 0) {
+                            eprintln!("search {entry_name} try {}: {verdict:?}", status.tries);
+                        }
+                        if verdict.accepted() {
                             let lock = if t.lock_time > 0 {
                                 Some(bisect_lock(contract, judge, &plan, "lock_time", t.lock_time))
                             } else if t.sequence > 0 {
@@ -420,14 +425,19 @@ fn name_affinity(param: &str, party: &str) -> usize {
     p.chars().zip(q.chars()).take_while(|(a, b)| a == b).count()
 }
 
-fn parties_by_affinity(c: &Contract, param: &str) -> Vec<KeyRef> {
+fn parties_by_affinity(c: &Contract, param: &str, body: &str) -> Vec<KeyRef> {
     // Strongest signal: the source checks this parameter against a named key,
     // e.g. `checkSig(paySig, payout)` or `checkMsgSig(s, ..., conductor)`.
-    let checked_with: Vec<&str> = c
-        .source
-        .lines()
-        .filter(|l| (l.contains("checkSig") || l.contains("checkMsgSig")) && mentions(l, param))
-        .collect();
+    // The entry's own body first: `deptSig` is checked against `parks` in
+    // `pullParks` and against `police` in `pullPolice`.
+    let checks = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|l| (l.contains("checkSig") || l.contains("checkMsgSig")) && mentions(l, param))
+            .map(String::from)
+            .collect()
+    };
+    let local = checks(body);
+    let checked_with: Vec<String> = if local.is_empty() { checks(&c.source) } else { local };
     let mut v: Vec<(usize, usize)> = c
         .wallets
         .parties
@@ -444,13 +454,14 @@ fn parties_by_affinity(c: &Contract, param: &str) -> Vec<KeyRef> {
 
 fn candidates(
     c: &Contract,
+    body: &str,
     param: &str,
     ty: &TypeArtifact,
     has_datasig: bool,
     msg_arg: Option<usize>,
 ) -> Result<Vec<(ArgRecipe, Option<String>)>, String> {
     let v = |a: ArtifactValue| (ArgRecipe::Value(a), None);
-    let parties = parties_by_affinity(c, param);
+    let parties = parties_by_affinity(c, param, body);
     Ok(match ty {
         TypeArtifact::Sig => {
             if parties.is_empty() {
@@ -504,9 +515,18 @@ fn candidates(
             // the signature alone, or after a one-byte path selector.
             if c.source.contains("sig(byte[65](") {
                 let keys = if parties.is_empty() { vec![KeyRef::Attacker] } else { parties.clone() };
+                // A path byte in front only when the script slices one off (`witness.slice(1, ...)`).
+                let path_first = c.source.contains(".slice(1,");
                 for k in keys.iter().take(2) {
-                    out.push((ArgRecipe::SigBytes { key: *k, prefix: vec![0x00] }, None));
-                    out.push((ArgRecipe::SigBytes { key: *k, prefix: vec![] }, None));
+                    let bare = (ArgRecipe::SigBytes { key: *k, prefix: vec![] }, None);
+                    let path = (ArgRecipe::SigBytes { key: *k, prefix: vec![0x00] }, None);
+                    if path_first {
+                        out.push(path);
+                        out.push(bare);
+                    } else {
+                        out.push(bare);
+                        out.push(path);
+                    }
                 }
             }
             if has_datasig {
@@ -681,8 +701,84 @@ fn successors(c: &Contract, from: &StateValues) -> Vec<StateValues> {
 }
 
 /// Output shapes an honest spend might take, most common first.
-fn output_candidates(
+/// Output shapes for one entry: shapes the entry's own source pins come first,
+/// and payees it names are tried before the others.
+fn output_candidates_for(
     c: &Contract,
+    entry: Option<&str>,
+    cov_value: u64,
+    extra_value: u64,
+    state: Option<&StateValues>,
+) -> Vec<Vec<OutputSpec>> {
+    let body = entry.and_then(|e| crate::tune::entry_body(&c.source, e)).unwrap_or("");
+    let mut out = pinned_shapes(c, body, cov_value + extra_value);
+    out.extend(generic_shapes(c, body, cov_value, extra_value, state));
+    out
+}
+
+/// `tx.outputs[i].scriptPubKey == byte[](new ScriptPubKeyP2PK(name))` and
+/// `tx.outputs[i].value == amount` lines read straight from the entry, plus a
+/// change output where it returns to `tx.inputs[this.activeInputIndex].scriptPubKey`.
+fn pinned_shapes(c: &Contract, body: &str, total: u64) -> Vec<Vec<OutputSpec>> {
+    use std::collections::BTreeMap;
+    let ints: BTreeMap<&str, i64> = c
+        .args
+        .iter()
+        .filter_map(|a| match a.value {
+            ArtifactValue::Int(n) => Some((a.name.as_str(), n)),
+            _ => None,
+        })
+        .collect();
+    let mut dest: BTreeMap<usize, Dest> = BTreeMap::new();
+    let mut value: BTreeMap<usize, u64> = BTreeMap::new();
+    for line in body.lines() {
+        let l = line.trim();
+        let Some(rest) = l.strip_prefix("require(tx.outputs[") else { continue };
+        let Some((idx, rest)) = rest.split_once(']') else { continue };
+        let Ok(i) = idx.trim().parse::<usize>() else { continue };
+        if let Some(r) = rest.strip_prefix(".scriptPubKey == byte[](new ScriptPubKeyP2PK(") {
+            let name = r.split(')').next().unwrap_or("").trim();
+            if let Some(p) = c.wallets.parties.iter().position(|w| w.label == name) {
+                dest.insert(i, Dest::Key(KeyRef::Party(p)));
+            }
+        } else if rest.starts_with(".scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey") {
+            dest.insert(i, Dest::SelfCovenant);
+        } else if let Some(r) = rest.strip_prefix(".value == ").or_else(|| rest.strip_prefix(".value <= ")) {
+            let e = r.trim_end_matches(';').trim_end_matches(')').trim();
+            let v = ints.get(e).copied().or_else(|| e.replace('_', "").parse().ok());
+            if let Some(v) = v.filter(|v| *v > 0) {
+                value.insert(i, v as u64);
+            }
+        }
+    }
+    let n = match dest.keys().max() {
+        Some(m) if dest.len() >= 2 && dest.len() == m + 1 => m + 1,
+        _ => return vec![],
+    };
+    let fixed: u64 = value.values().sum();
+    let mut shapes = Vec::new();
+    for fee in [BASE_FEE, 100_000] {
+        if fixed + fee >= total {
+            continue;
+        }
+        let rest = total - fixed - fee;
+        let open: Vec<usize> = (0..n).filter(|i| !value.contains_key(i)).collect();
+        let mut shape: Vec<OutputSpec> = Vec::with_capacity(n);
+        for i in 0..n {
+            let v = match value.get(&i) {
+                Some(v) => *v,
+                None => rest / open.len().max(1) as u64,
+            };
+            shape.push(OutputSpec::new(v, dest[&i].clone()));
+        }
+        shapes.push(shape);
+    }
+    shapes
+}
+
+fn generic_shapes(
+    c: &Contract,
+    body: &str,
     cov_value: u64,
     extra_value: u64,
     state: Option<&StateValues>,
@@ -701,7 +797,10 @@ fn output_candidates(
         }
     }
 
-    let mut payees: Vec<Dest> = (0..c.wallets.parties.len()).map(|i| Dest::Key(KeyRef::Party(i))).collect();
+    // Parties the entry itself names come first (`ScriptPubKeyP2PK(parks)` in `pullParks`).
+    let mut order: Vec<usize> = (0..c.wallets.parties.len()).collect();
+    order.sort_by_key(|i| !mentions(body, &c.wallets.parties[*i].label));
+    let mut payees: Vec<Dest> = order.into_iter().map(|i| Dest::Key(KeyRef::Party(i))).collect();
     payees.extend((0..c.stand_ins.len()).map(Dest::StandIn));
     let conts: Vec<Dest> = match (c.is_stateful(), state.or(c.initial_state.as_ref())) {
         (true, Some(s)) => successors(c, s).into_iter().map(Dest::Successor).collect(),
@@ -756,6 +855,41 @@ fn output_candidates(
         }
         if fi >= 3 {
             continue;
+        }
+        // A payment the next state records: a running total that grows by
+        // what was just paid out (`spent + amount`), or starts over at it.
+        if let (true, Some(base)) = (c.is_stateful(), state.or(c.initial_state.as_ref())) {
+            let int_fields: Vec<&String> =
+                c.state_fields.iter().filter(|(_, t)| matches!(t, TypeArtifact::Int)).map(|(n, _)| n).collect();
+            // Constructor amounts first: a running total is usually checked against one.
+            let mut coupled: Vec<u64> =
+                amounts.iter().copied().filter(|a| c.ctor_ints.contains(&(*a as i64))).collect();
+            coupled.extend(amounts.iter().copied().filter(|a| !c.ctor_ints.contains(&(*a as i64))));
+            for a in coupled.iter().take(5) {
+                for f in &int_fields {
+                    let Some(ArtifactValue::Int(cur)) = base.get(*f) else { continue };
+                    for nv in [cur + *a as i64, *a as i64] {
+                        let mut st = base.clone();
+                        st.insert((*f).clone(), ArtifactValue::Int(nv));
+                        // Also with another int field moved by a constructor value
+                        // (a period start advancing by `period`).
+                        let mut variants = vec![st.clone()];
+                        for g in int_fields.iter().filter(|g| *g != f) {
+                            let Some(ArtifactValue::Int(gv)) = base.get(*g) else { continue };
+                            for k in c.ctor_ints.iter().filter(|k| **k > 0).take(4) {
+                                let mut s2 = st.clone();
+                                s2.insert((*g).clone(), ArtifactValue::Int(gv + k));
+                                variants.push(s2);
+                            }
+                        }
+                        for s in variants {
+                            for p in payees.iter().take(3) {
+                                out.push(vec![o(*a, p), o(v - a, &Dest::Successor(s.clone()))]);
+                            }
+                        }
+                    }
+                }
+            }
         }
         // Pairs: an amount to one, the rest to another.
         for a in &amounts {
@@ -838,11 +972,12 @@ fn search_cospend(
     let has_datasig = entry.params.iter().any(|p| matches!(p.ty, TypeArtifact::Datasig));
     let mut per_param = Vec::new();
     for p in &entry.params {
-        per_param.push(candidates(contract, &p.name, &p.ty, has_datasig, msg_arg).ok()?);
+        let body = crate::tune::entry_body(&contract.source, entry_name).unwrap_or("");
+        per_param.push(candidates(contract, body, &p.name, &p.ty, has_datasig, msg_arg).ok()?);
     }
     let combos = ranked_cartesian(&per_param, 64);
     let (pov_daa, block_time) = (leader.plan.pov_daa, leader.plan.block_time);
-    let shapes = output_candidates(contract, COVENANT_VALUE, lead_value, state);
+    let shapes = output_candidates_for(contract, Some(entry_name), COVENANT_VALUE, lead_value, state);
     let mut tried = 0;
     // Shapes outer: the arguments here are few (a witness, a signature),
     // the shapes many, and one wrong argument must not use up the budget.

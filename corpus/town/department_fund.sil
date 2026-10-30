@@ -1,0 +1,113 @@
+pragma silverscript ^0.1.0;
+
+// DepartmentFund: one department's money for the fiscal year.
+//
+// The town council funds this coin once, with the department's annual
+// appropriation. After that, money leaves it in only three ways:
+//
+//   pay / payNextPeriod   the department head and the treasurer both sign a
+//                         payment to any vendor or payroll account, and the
+//                         total paid in one period can never exceed the
+//                         monthly allotment. This is the rate limit a real
+//                         budget has: no department can spend its year in a week.
+//                         The chain can only check "at least this late", so a
+//                         month nobody used can be caught up later; spending can
+//                         never run AHEAD of schedule (by month N, at most N
+//                         allotments in total).
+//   recall                3 of the 5 council members send the whole balance
+//                         back to the town treasury (budget amendment, audit
+//                         freeze, department merged or closed).
+//   lapse                 after the fiscal year ends, anyone may send what is
+//                         left back to the treasury. Unspent money lapses,
+//                         exactly as in a municipal budget, and nobody needs
+//                         a key to make that happen.
+//
+// Two people must agree on every payment (head + treasurer), the council can
+// always take the money back, and nobody can make it disappear: the only
+// destinations outside the allotment are the town's own treasury.
+// If both pay and lapse are possible after the year ends, whichever is mined
+// first wins.
+//
+// State: when the current period started, and how much was paid in it.
+// Times are milliseconds (Kaspa past-median time).
+
+contract DepartmentFund(
+    pubkey head,                // department head: requests every payment
+    pubkey treasurer,           // town treasurer: countersigns every payment
+    pubkey council1, pubkey council2, pubkey council3, pubkey council4, pubkey council5,
+    byte[32] treasury,          // script hash of the TownTreasury: the only place money returns to
+    int allotment,              // most that can be paid out per period, in sompi
+    int period,                 // period length in ms (30 days = 2592000000)
+    int maxFee,                 // most a spend may leave to the miner
+    temporal fiscalYearEnd,     // after this, unspent money lapses to the treasury
+    int init_periodStart,       // first period start, ms
+    int init_spent
+) {
+    int periodStart = init_periodStart;
+    int spent = init_spent;
+
+    // A council vote: each member either signs (65 bytes, checked against
+    // their key) or passes nothing. A signature that is present must be valid.
+    function vote(byte[] s, pubkey member) : int {
+        int v = 0;
+        if (s.length > 0) {
+            require(checkSig(sig(byte[65](s)), member));
+            v = 1;
+        }
+        return v;
+    }
+
+    function councilVotes(byte[] a, byte[] b, byte[] c, byte[] d, byte[] e) : int {
+        return vote(a, council1) + vote(b, council2) + vote(c, council3) + vote(d, council4) + vote(e, council5);
+    }
+
+    // A payment inside the current period. Output 0: the payee. Output 1: this
+    // fund, carrying the new running total.
+    entry pay(sig headSig, sig treasurerSig) {
+        require(checkSig(headSig, head));
+        require(checkSig(treasurerSig, treasurer));
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 2);
+        int amount = tx.outputs[0].value;
+        require(amount > 0);
+        require(spent + amount <= allotment);
+        int held = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[1].value >= held - amount - maxFee);
+        validateOutputState(1, State { periodStart: periodStart, spent: spent + amount });
+    }
+
+    // The first payment of a new period: the running total starts over.
+    // Periods advance one at a time, and only once their start has passed.
+    entry payNextPeriod(sig headSig, sig treasurerSig) {
+        require(checkSig(headSig, head));
+        require(checkSig(treasurerSig, treasurer));
+        int next = periodStart + period;
+        require(tx.time >= temporal(next));
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 2);
+        int amount = tx.outputs[0].value;
+        require(amount > 0);
+        require(amount <= allotment);
+        int held = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[1].value >= held - amount - maxFee);
+        validateOutputState(1, State { periodStart: next, spent: amount });
+    }
+
+    // Council takes the money back to the treasury.
+    entry recall(byte[] council1Sig, byte[] council2Sig, byte[] council3Sig, byte[] council4Sig, byte[] council5Sig) {
+        require(councilVotes(council1Sig, council2Sig, council3Sig, council4Sig, council5Sig) >= 3);
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2SH(treasury)));
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - maxFee);
+    }
+
+    // Year end: anyone returns the remainder to the treasury.
+    entry lapse() {
+        require(tx.time >= fiscalYearEnd);
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2SH(treasury)));
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - maxFee);
+    }
+}

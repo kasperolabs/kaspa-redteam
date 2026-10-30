@@ -1,0 +1,51 @@
+pragma silverscript ^0.1.0;
+
+// TownTreasury: the general fund. Its address never changes, so taxes, fees,
+// grants and lapsed department money can all be paid to it at any time.
+//
+// Two ways out:
+//
+//   appropriate   3 of the 5 council members sign. This is a council vote:
+//                 funding a department for the year, a capital project, a
+//                 transfer to another fund. The council is the legislature;
+//                 the chain enforces that a quorum signed, not what they voted.
+//   consolidate   the treasurer alone may merge many deposit coins into one
+//                 coin at this same address, so the council's next transaction
+//                 stays small. Every sompi stays in the treasury (less a capped fee).
+
+contract TownTreasury(
+    pubkey treasurer,
+    pubkey council1, pubkey council2, pubkey council3, pubkey council4, pubkey council5,
+    int maxFee
+) {
+
+    // A council vote: each member either signs (65 bytes, checked against
+    // their key) or passes nothing. A signature that is present must be valid.
+    function vote(byte[] s, pubkey member) : int {
+        int v = 0;
+        if (s.length > 0) {
+            require(checkSig(sig(byte[65](s)), member));
+            v = 1;
+        }
+        return v;
+    }
+
+    function councilVotes(byte[] a, byte[] b, byte[] c, byte[] d, byte[] e) : int {
+        return vote(a, council1) + vote(b, council2) + vote(c, council3) + vote(d, council4) + vote(e, council5);
+    }
+    entry appropriate(byte[] council1Sig, byte[] council2Sig, byte[] council3Sig, byte[] council4Sig, byte[] council5Sig) {
+        require(councilVotes(council1Sig, council2Sig, council3Sig, council4Sig, council5Sig) >= 3);
+    }
+
+    entry consolidate(sig treasurerSig) {
+        require(checkSig(treasurerSig, treasurer));
+        require(tx.outputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey);
+        int total = 0;
+        for (i, 0, tx.inputs.length, 16) {
+            require(tx.inputs[i].scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey);
+            total = total + tx.inputs[i].value;
+        }
+        require(tx.outputs[0].value >= total - maxFee);
+    }
+}

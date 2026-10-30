@@ -104,3 +104,9 @@ pub fn spend_map(c: &Contract, paths: &[PathStatus]) -> serde_json::Value {
         .collect();
     serde_json::Value::Array(rows)
 }
+
+/// `REDTEAM_DEBUG=1`: print search progress and rejection reasons to stderr.
+pub fn debug_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("REDTEAM_DEBUG").is_some())
+}

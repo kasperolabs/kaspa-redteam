@@ -389,6 +389,25 @@ fn hash_use(source: &str, name: &str) -> HashUse {
     }
 }
 
+/// `int_default`, adjusted by how the source uses time and running totals.
+fn int_default_in(source: &str, name: &str) -> i64 {
+    let n = name.to_ascii_lowercase();
+    // Running totals a coin starts with (`init_spent`, `claimed`): nothing yet.
+    if ["spent", "used", "claimed", "paid", "sold", "minted", "withdrawn", "released"].iter().any(|k| n.contains(k)) {
+        return 0;
+    }
+    // Wall-clock contracts (`tx.time`, no DAA ages): times and durations in milliseconds.
+    if source.contains("tx.time") && !source.contains("ageDaa") {
+        if ["period", "duration", "interval", "delay", "window"].iter().any(|k| n.ends_with(k)) {
+            return 2_592_000_000; // 30 days
+        }
+        if ["start", "time", "deadline", "until", "after", "end", "at"].iter().any(|k| n.ends_with(k)) {
+            return 1_600_000_000_000;
+        }
+    }
+    int_default(name)
+}
+
 fn int_default(name: &str) -> i64 {
     let n = name.to_ascii_lowercase();
     let counts = ["periods", "count", "installments", "rounds", "slots", "max_ins", "maxins"];
@@ -418,7 +437,7 @@ fn default_value(
 ) -> Result<(ArtifactValue, String)> {
     Ok(match ty {
         TypeArtifact::Int if loop_bound(source, name) => (ArtifactValue::Int(3), "default (loop bound)".into()),
-        TypeArtifact::Int => (ArtifactValue::Int(int_default(name)), "default".into()),
+        TypeArtifact::Int => (ArtifactValue::Int(int_default_in(source, name)), "default".into()),
         TypeArtifact::Temporal => (ArtifactValue::Int(1_600_000_000_000), "default".into()),
         TypeArtifact::Bool => (ArtifactValue::Bool(true), "default".into()),
         // Scheme, type and mode selectors: 0 is the first (usually the plain key) case.

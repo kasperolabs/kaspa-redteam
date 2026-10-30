@@ -144,9 +144,12 @@ fn origin(req: &tiny_http::Request) -> String {
             _ => {}
         }
     }
-    let host: String = host.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']')).collect();
+    let host: String =
+        host.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']')).collect();
     let local = host.starts_with("localhost") || host.starts_with("127.") || host.starts_with('[');
-    let scheme = proto.filter(|p| p == "http" || p == "https").unwrap_or_else(|| if local { "http".into() } else { "https".into() });
+    let scheme = proto
+        .filter(|p| p == "http" || p == "https")
+        .unwrap_or_else(|| if local { "http".into() } else { "https".into() });
     format!("{scheme}://{host}")
 }
 
@@ -182,7 +185,8 @@ fn handle(mut req: tiny_http::Request, s: &Shared) {
             respond(req, 200, "text/html; charset=utf-8", page)
         }
         (&tiny_http::Method::Get, "/og.png") => {
-            let header = |k: &str, v: &str| tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).expect("ascii header");
+            let header =
+                |k: &str, v: &str| tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).expect("ascii header");
             let resp = tiny_http::Response::from_data(OG_IMAGE.to_vec())
                 .with_header(header("Content-Type", "image/png"))
                 .with_header(header("Cache-Control", "public, max-age=86400"));

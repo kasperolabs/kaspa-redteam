@@ -41,7 +41,7 @@ fn mentions(line: &str, name: &str) -> bool {
 }
 
 /// The source text of `entry name(...) { ... }`.
-fn entry_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+pub(crate) fn entry_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
     let start = source.match_indices("entry ").find(|(i, _)| {
         let rest = &source[i + 6..];
         rest.starts_with(name) && rest[name.len()..].trim_start().starts_with('(')

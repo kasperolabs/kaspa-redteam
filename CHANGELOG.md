@@ -1,5 +1,15 @@
 # Changelog
 
+## Tool 0.3.7 (library 0.3.0)
+
+- Search: signers are ranked by the checks in the entry's own body (`deptSig` against `parks` in `pullParks`), so contracts with many similar paths stop burning their budget on the wrong key. A 12-path municipal budget went from 252 s with 5 paths unexplored to 0.1 s with all explored.
+- Search: output shapes the entry pins in its source (`tx.outputs[i].scriptPubKey == ...P2PK(x)` with `.value ==` or `.value <=`, plus a change output back to the covenant) are tried first, including ten-output settlements.
+- Search: running totals in state (`spent + amount`, a period start advancing by `period`) are built together with the payment they record.
+- Defaults: running totals (`init_spent`, `claimed`) start at 0; in wall-clock contracts (`tx.time`, no DAA ages) times default to a date in milliseconds and periods to 30 days.
+- Witness bytes: the signature alone is tried first unless the script slices off a path byte.
+- `REDTEAM_DEBUG=1` prints search progress with rejection reasons.
+- `corpus/town/`: a town treasury and department fund (council 3 of 5, two signatures per payment, monthly allotments, lapse at year end) with a guide.
+
 ## Tool 0.3.6 (library 0.3.0)
 
 - `--deadline SECONDS`: the search stops at the deadline, paths it had not cracked are reported as unexplored (time limit), and everything found is still attacked and reported. The web page sets it to two thirds of `--timeout`, so a slow contract returns a partial report instead of a timeout error.
