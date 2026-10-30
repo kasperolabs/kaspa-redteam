@@ -153,6 +153,10 @@ details.ctor.flash { outline: 2px solid var(--red); outline-offset: 2px; }
 .verdict { padding: 22px 22px 18px; border-left: 5px solid var(--green); }
 .verdict.bad { border-left-color: var(--red); }
 .verdict.partial { border-left-color: var(--amber); }
+.verdict.pass { background: var(--green-soft); border-color: var(--green); border-left-color: var(--green); }
+.verdict.pass h2 { color: var(--green); }
+.badge { display: inline-block; margin: 0 10px 0 0; padding: 2px 9px; border-radius: 4px; background: var(--green); color: var(--bg, #fff); font-family: var(--mono); font-size: 13px; font-weight: 700; letter-spacing: .06em; vertical-align: 4px; }
+.ok { color: var(--green); font-weight: 600; }
 .verdict h2 { margin: 0 0 4px; font-size: 24px; letter-spacing: -.015em; }
 .verdict .sub { color: var(--muted); font-family: var(--mono); font-size: 13px; }
 .stats { display: flex; gap: 0; margin-top: 16px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; flex-wrap: wrap; }
@@ -634,17 +638,17 @@ kaspa-redteam vault.sil -v</pre>
     if (findings.length) { cls = "bad"; title = `${groups.length} finding${groups.length > 1 ? "s" : ""}`; sub = "Consensus accepted hostile transactions. Details below."; }
     else if (run === 0) { cls = "partial"; title = "Nothing could be attacked"; sub = "No path was spent honestly, so no attack applied. See the notes."; }
     else if (unexplored) { cls = "partial"; title = "Survived, with gaps"; sub = `Every attack that ran was rejected, but ${unexplored} path${unexplored > 1 ? "s were" : " was"} not explored.`; }
-    else { title = "Survived every attack"; sub = "Every hostile transaction was rejected on every path."; }
+    else { cls = "pass"; title = "Nothing we tried broke it"; sub = `Every one of the ${run} attacks we ran, on every spending path, was rejected by Kaspa's consensus rules. That is a pass on this review, not an audit or a guarantee.`; }
     const name = rep.web_subject || rep.subject_name;
     if (project) title = `${name}: ${title.charAt(0).toLowerCase() + title.slice(1)}`;
 
     let h = `<div class="card verdict ${cls}"${project ? ` id="rep${k}" style="margin-top:28px;scroll-margin-top:16px"` : ""}>
-      <h2>${esc(title)}</h2>
+      <h2>${cls === "pass" ? `<span class="badge">PASSED</span>` : ""}${esc(title)}</h2>
       <div class="sub">${esc(name)}${rep.context && rep.context.contract ? " · contract " + esc(rep.context.contract) : ""} · ${(rep.millis / 1000).toFixed(1)} s · library v${esc(rep.library_version)}</div>
       <p style="margin:12px 0 0">${esc(sub)}</p>
       <div class="stats">
         <div><b>${run}</b><span>attacks run</span></div>
-        <div><b>${count("survived")}</b><span>survived</span></div>
+        <div><b${count("survived") ? ' style="color:var(--green)"' : ""}>${count("survived")}</b><span>survived</span></div>
         <div><b>${count("skipped")}</b><span>skipped</span></div>
         <div><b style="color:${findings.length ? "var(--red)" : "inherit"}">${groups.length}</b><span>findings</span></div>
       </div>
@@ -733,11 +737,30 @@ kaspa-redteam vault.sil -v</pre>
       const gaps = ((r.context && r.context.spend_map) || []).filter(m => !m.explored).length;
       const part = (r.notes || []).find(n => /of this file was spent and attacked as part of/.test(n));
       const partOf = part ? (/as part of (\S+)'s path/.exec(part) || [])[1] : null;
-      const what = fnd ? `${fnd} finding${fnd > 1 ? "s" : ""}` : run === 0 && partOf ? `attacked as part of ${partOf}'s spend (see there)` : run === 0 ? "nothing could be attacked" : gaps ? `survived, ${gaps} path${gaps > 1 ? "s" : ""} unexplored` : "survived every attack";
-      return `<li><a href="#rep${k}"><b>${esc(r.web_subject || r.subject_name)}</b></a>: ${esc(what)}${run === 0 && partOf ? "" : ` <span class="hint" style="display:inline">(${run} attack${run === 1 ? "" : "s"} run)</span>`}</li>`;
+      const what = fnd ? `${fnd} finding${fnd > 1 ? "s" : ""}` : run === 0 && partOf ? `attacked as part of ${partOf}'s spend (see there)` : run === 0 ? "nothing could be attacked" : gaps ? `survived, ${gaps} path${gaps > 1 ? "s" : ""} unexplored` : "";
+      const shown = what ? esc(what) : `<span class="ok">passed</span>, survived every attack`;
+      return `<li><a href="#rep${k}"><b>${esc(r.web_subject || r.subject_name)}</b></a>: ${shown}${run === 0 && partOf ? "" : ` <span class="hint" style="display:inline">(${run} attack${run === 1 ? "" : "s"} run)</span>`}</li>`;
     };
-    let h = `<div class="card verdict ${total ? "bad" : ""}">
-      <h2>Project: ${reps.length} contracts, ${total} finding${total === 1 ? "" : "s"}</h2>
+    // A contract passes when attacks ran, none got through and every path was explored.
+    // A file spent only as part of another contract's path passes with that contract.
+    const passes = (r, depth) => {
+      const res = r.results || [];
+      if (res.some(x => x.outcome.status === "found")) return false;
+      if (!res.some(x => x.outcome.status !== "skipped")) {
+        const n = (r.notes || []).find(n => /of this file was spent and attacked as part of/.test(n));
+        const of = n ? (/as part of (\S+)'s path/.exec(n) || [])[1] : null;
+        const host = of && depth < 3 && reps.find(x => (x.web_subject || x.subject_name) === of);
+        return !!host && passes(host, depth + 1);
+      }
+      return !((r.context && r.context.spend_map) || []).some(m => !m.explored);
+    };
+    const passed = reps.filter(r => passes(r, 0)).length;
+    const pcls = total ? "bad" : passed === reps.length ? "pass" : "partial";
+    const head = total ? `Project: ${reps.length} contracts, ${total} finding${total === 1 ? "" : "s"}`
+      : passed === reps.length ? `Project: all ${reps.length} contracts passed`
+      : `Project: ${passed} of ${reps.length} contracts passed, no findings`;
+    let h = `<div class="card verdict ${pcls}">
+      <h2>${pcls === "pass" ? `<span class="badge">PASSED</span>` : ""}${esc(head)}</h2>
       <div class="sub">${esc(((proj.project && proj.project.files) || []).join(" · "))}</div>
       <p style="margin:12px 0 6px">How the contracts refer to each other, as the tool understood it:</p>
       <ul class="notes" style="padding:0 0 0 20px">${links.length ? links.map(l => `<li><b>${esc(l.from)}</b> <code>${esc(l.via)}</code> ${l.kind === "address" ? "pays to the address of" : l.kind === "covenant id" ? "is the covenant id of the coins of" : "pins the program of"} <b>${esc(l.to)}</b></li>`).join("") : "<li>no links found; each contract was attacked on its own</li>"}</ul>

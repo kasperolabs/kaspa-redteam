@@ -55,7 +55,7 @@ pub fn render_terminal(r: &RunReport, style: &TermStyle, verbose: bool) -> Strin
     } else if gaps > 0 {
         style.yellow(&format!("0 FINDINGS, {gaps} PATH{} UNEXPLORED", if gaps == 1 { "" } else { "S" }))
     } else {
-        style.green("0 FINDINGS")
+        style.green("PASSED: 0 FINDINGS")
     };
     let _ = writeln!(
         o,

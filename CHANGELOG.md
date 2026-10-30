@@ -1,5 +1,11 @@
 # Changelog
 
+## Tool 0.14.1 (library 0.9.0)
+
+- A clean result now reads as a pass. When attacks ran, none got through and every path was explored, the web page shows a green PASSED badge: "Nothing we tried broke it", with a line saying it is a pass on this review, not an audit or a guarantee. The terminal prints `PASSED: 0 FINDINGS` in green.
+- Project view: the header says "all N contracts passed" (green) or "M of N contracts passed, no findings" (amber, when paths are unexplored). A file attacked as part of another contract's spend passes with that contract.
+- Runs with gaps or with nothing attacked keep their amber verdicts; findings stay red.
+
 ## Tool 0.14.0 (library 0.9.0)
 
 - Smarter defaults: when a path stays unexplored with the tool's default numbers, the run is tried once more with the feature switches the user did not set at 0 ("off"): numbers the source compares with 0 or with the clock (`if (interval > 0)`, `maxFill == 0 || ...`, `slope != 0`, `tif == TIF_GTC`, `tx.daa >= activeFrom`). Prices, amounts and anything the source requires to be positive outside such a switch keep their defaults. The second run is kept only if it explores more, and the report says which values were set to 0. A two-sided order book (bid, ask, token) is now fully explored with no values given.

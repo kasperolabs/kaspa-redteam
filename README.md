@@ -195,6 +195,7 @@ Keep it running with pm2 (`pm2 start /path/to/kaspa-redteam --name redteam-web -
 ### Reading the report
 
 - `N attacks run / survived / skipped`: an attack is skipped when no explored path is one it applies to (signature attacks on a contract with no signed path, say). Skipped is neither a pass nor a fail.
+- The verdict: `PASSED: 0 FINDINGS` (green) when attacks ran, none got through and every path was explored. It means nothing the tool tried broke the contract; it is not an audit or a guarantee. `0 FINDINGS, N PATHS UNEXPLORED` and `NOTHING TESTED` are not passes. `N FINDINGS` counts problems, not attempts.
 - `-v` adds the **spend map**: for every path, who can spend it, where the honest spend paid, and the earliest lock value consensus accepted. Read it first; it is the tool's understanding of your contract.
 - `note: constructor ... set to ...`: a value the tool tuned so a path could be explored. The findings hold for that value; if your deployment uses a different one, pass it with `--arg`.
 - `note: path ... unexplored`: the path was not attacked. Clean results say nothing about it.
