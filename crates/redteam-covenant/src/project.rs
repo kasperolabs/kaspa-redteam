@@ -211,7 +211,9 @@ pub fn run(
             for name in names {
                 // Not gated on the search deadline: a family attempt is a handful of
                 // runs, and it is the one way into these paths.
-                if let Some((status, notes)) = crate::family::explore(&t.contract, &name, &programs, judge) {
+                let found = crate::family::explore(&t.contract, &name, &programs, judge)
+                    .or_else(|| crate::family::explore_genesis(&t.contract, &name, &programs, judge));
+                if let Some((status, notes)) = found {
                     // A path no single-program spend opened is replaced; an explored
                     // one gains its family variant (a mint next to a heartbeat).
                     match t.paths.iter().position(|p| p.name == name && p.baseline.is_none()) {
@@ -233,6 +235,59 @@ pub fn run(
         reports.push(crate::run_paths_timed(&t.contract, only, t.paths, vec![], notes, started));
     }
     crate::baseline::set_file_deadline(None);
+    // Coins a family spend created: spent by their owner with their own
+    // program's entries, then attacked there, so the minted coin itself is
+    // tested (and a coin nobody can move is reported).
+    let minted: Vec<(String, Vec<u8>, String, String)> = reports
+        .iter_mut()
+        .flat_map(|r| {
+            let (keep, m): (Vec<String>, Vec<String>) =
+                std::mem::take(&mut r.notes).into_iter().partition(|n| !n.starts_with("minted: "));
+            r.notes = keep;
+            let from = r.subject_name.clone();
+            m.into_iter().filter_map(move |n| {
+                let mut it = n["minted: ".len()..].split('|');
+                let file = it.next()?.to_string();
+                let mut redeem = vec![0u8; it.clone().next()?.len() / 2];
+                faster_hex::hex_decode(it.next()?.as_bytes(), &mut redeem).ok()?;
+                let path = it.next()?.to_string();
+                Some((file, redeem, from.clone(), path))
+            })
+        })
+        .collect();
+    let mut done: Vec<String> = Vec::new();
+    for (file, redeem, from, path) in minted {
+        if done.contains(&file) {
+            continue;
+        }
+        done.push(file.clone());
+        let Some(i) = files.iter().position(|f| f.name == file) else { continue };
+        let ov = overrides_for(&files[i].source, overrides)?;
+        let Ok(mut c) = Contract::load_linked(&files[i].name, &files[i].source, &ov, &per_file[i]) else { continue };
+        let Some(state) = crate::family::decode_state(&c, &redeem) else { continue };
+        // The owner the data named: a key the tool holds ("depositor").
+        c.wallets.party("depositor");
+        let mut paths: Vec<crate::baseline::PathStatus> = Vec::new();
+        // A short grace of its own, so this step is not starved by the overall deadline.
+        crate::baseline::set_file_deadline(Some(std::time::Instant::now() + std::time::Duration::from_secs(12)));
+        for e in c.entries.clone() {
+            let mut p = crate::baseline::search_path_budget(&c, judge, &e.name, Some(&state), 4_000);
+            p.entry = format!("minted:{}", e.name);
+            paths.push(p);
+        }
+        crate::baseline::set_file_deadline(None);
+        let timed_out = paths.iter().any(|p| p.unexplored_reason.as_deref().is_some_and(|r| r.contains("time limit")));
+        let spent: Vec<String> = paths.iter().filter(|p| p.baseline.is_some()).map(|p| p.name.clone()).collect();
+        let mut notes = vec![if spent.is_empty() && timed_out {
+            format!("minted coins: spending the coin {from}'s `{path}` created was not tried to the end within the time limit; run kaspa-redteam on your own machine for no limit.")
+        } else if spent.is_empty() {
+            format!("minted coins: the coin {from}'s `{path}` created could not be spent by its owner through any entry of this file. If that is not intended, minted coins are stuck.")
+        } else {
+            format!("minted coins: the coin {from}'s `{path}` created was spent by its owner through {} and attacked there (paths `minted:...`).", spent.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", "))
+        }];
+        let extra = crate::run_paths_timed(&c, only, paths, vec![], std::mem::take(&mut notes), std::time::Instant::now());
+        merge_report(&mut reports[i], extra);
+    }
     // A program that only took part in another file's family spend says so in
     // its own report, so "nothing could be attacked" is not read as untested.
     let members: Vec<(String, String, String, String)> = reports
@@ -258,4 +313,42 @@ pub fn run(
         }
     }
     Ok((links, reports))
+}
+
+/// Adds a second run's results to a report: attacks that found something stay
+/// found, attempts add up, a skip gives way to a run.
+fn merge_report(into: &mut RunReport, extra: RunReport) {
+    use redteam_core::Outcome;
+    for x in extra.results {
+        match into.results.iter_mut().find(|r| r.id == x.id) {
+            None => into.results.push(x),
+            Some(r) => {
+                let merged = match (std::mem::replace(&mut r.outcome, Outcome::Survived { attempts: 0 }), x.outcome) {
+                    (Outcome::Found { attempts: a, findings: mut f }, Outcome::Found { attempts: b, findings: g }) => {
+                        f.extend(g);
+                        Outcome::Found { attempts: a + b, findings: f }
+                    }
+                    (Outcome::Found { attempts: a, findings }, Outcome::Survived { attempts: b })
+                    | (Outcome::Survived { attempts: b }, Outcome::Found { attempts: a, findings }) => {
+                        Outcome::Found { attempts: a + b, findings }
+                    }
+                    (f @ Outcome::Found { .. }, Outcome::Skipped { .. }) | (Outcome::Skipped { .. }, f @ Outcome::Found { .. }) => f,
+                    (Outcome::Survived { attempts: a }, Outcome::Survived { attempts: b }) => Outcome::Survived { attempts: a + b },
+                    (s @ Outcome::Survived { .. }, Outcome::Skipped { .. }) | (Outcome::Skipped { .. }, s @ Outcome::Survived { .. }) => s,
+                    (sk @ Outcome::Skipped { .. }, Outcome::Skipped { .. }) => sk,
+                };
+                r.outcome = merged;
+            }
+        }
+    }
+    if let (Some(a), Some(b)) = (into.context.get_mut("spend_map").and_then(|m| m.as_array_mut()), extra.context.get("spend_map").and_then(|m| m.as_array())) {
+        a.extend(b.iter().cloned());
+    }
+    // Notes from the extra run that say something new (not the judge line again).
+    for n in extra.notes {
+        if !into.notes.contains(&n) {
+            into.notes.insert(0, n);
+        }
+    }
+    into.millis += extra.millis;
 }

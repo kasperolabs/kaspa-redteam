@@ -42,9 +42,15 @@ pub fn set_file_deadline(at: Option<std::time::Instant>) {
     *FILE_DEADLINE.lock().unwrap() = at;
 }
 
+/// A file deadline, when set, replaces the overall one: it is either a share
+/// of what is left, or a short grace for a step that comes after (spending
+/// minted coins), which would otherwise get no time at all.
 pub fn out_of_time() -> bool {
     let now = std::time::Instant::now();
-    DEADLINE.get().is_some_and(|d| now >= *d) || FILE_DEADLINE.lock().unwrap().is_some_and(|d| now >= d)
+    match *FILE_DEADLINE.lock().unwrap() {
+        Some(d) => now >= d,
+        None => DEADLINE.get().is_some_and(|d| now >= *d),
+    }
 }
 
 pub const TIME_LIMIT_REASON: &str =

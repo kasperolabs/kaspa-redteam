@@ -83,3 +83,8 @@ fam!(FAM06, "FAM-06", "Replay the same proof on the next state",
     "require(nonce > prev_state.cursor);  // and move the cursor past every record",
     "Proofs and readings are public once used. Anyone resubmits the same one after it was processed and mints again.",
     45);
+fam!(FAM07, "FAM-07", "Start the family a second time",
+    "a genesis path that can run again after the family exists",
+    "require(prev_state.token == ZERO32);  // and record the new family id in the successor state",
+    "Anyone runs the start-up path again and creates a second family of the same program next to the real one, for example a second mint authority.",
+    46);

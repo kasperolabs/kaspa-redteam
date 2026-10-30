@@ -1,5 +1,12 @@
 # Changelog
 
+## Tool 0.6.0 (library 0.5.0)
+
+- Genesis: a path that starts a new covenant family is tried with a new coin of a project program, its covenant id derived as consensus does (`SpendPlan.genesis`). The ETH bridge's `init` is now explored, so the bridge has no unexplored paths.
+- FAM-07: start the family a second time.
+- Minted coins are spent by their owner with their own program's entries and attacked there (`minted:...` paths); a coin no entry can move is reported. This step gets a short time of its own under `--deadline`.
+- A file deadline, when set, replaces the overall one.
+
 ## Tool 0.5.1 (library 0.4.0)
 
 - Family spends are tried even when the search deadline has passed (they take a few runs, and they are the only way into those paths). On a slower server the web page skipped them.
@@ -133,6 +140,10 @@
 - Report time now includes the search.
 
 # Attack library changelog
+
+## 0.5.0
+
+- FAM-07: start the family a second time.
 
 ## 0.4.0
 

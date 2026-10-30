@@ -236,6 +236,10 @@ pub struct SpendPlan {
     pub pov_daa: u64,
     /// Past median time in ms, for time-based lock times.
     pub block_time: u64,
+    /// New covenant families this transaction starts: (authorizing input,
+    /// outputs). Their ids are computed as consensus does (genesis).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub genesis: Vec<(u16, Vec<u32>)>,
 }
 
 impl SpendPlan {
@@ -246,7 +250,7 @@ impl SpendPlan {
         pov_daa: u64,
         block_time: u64,
     ) -> Self {
-        Self { version: 0, inputs, outputs, lock_time, payload: vec![], pov_daa, block_time }
+        Self { version: 0, inputs, outputs, lock_time, payload: vec![], pov_daa, block_time, genesis: vec![] }
     }
     pub fn input_total(&self) -> u64 {
         self.inputs.iter().map(|i| i.value()).sum()
@@ -477,6 +481,22 @@ impl Judge {
             plan.payload.clone(),
         );
 
+        // Genesis outputs get their new covenant id the way consensus computes it.
+        if !plan.genesis.is_empty() {
+            for (_, outs) in &plan.genesis {
+                for &o in outs {
+                    if let Some(out) = tx.outputs.get_mut(o as usize) {
+                        out.covenant = None;
+                    }
+                }
+            }
+            let groups: Vec<kaspa_consensus_core::tx::GenesisCovenantGroup> = plan
+                .genesis
+                .iter()
+                .map(|(a, outs)| kaspa_consensus_core::tx::GenesisCovenantGroup::new(*a, outs.clone()))
+                .collect();
+            tx.populate_genesis_covenants(&groups).map_err(|e| anyhow!("genesis: {e}"))?;
+        }
         // A zero-value output never reaches the mass rules (and divides by zero in them).
         if tx.outputs.iter().any(|o| o.value == 0) {
             return Err(anyhow!("an output carries no value"));

@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 // TEST FIXTURE for kaspa-redteam's family attacks: Kaspero Labs' bridge v4 with its replay
-// protection removed. Never deploy. The fixed/ copy is the real contract.
+// protection and its run-once init check removed. Never deploy. The fixed/ copy is the real contract.
 // BRIDGE covenant v4: the Kaspa side of Kaspero Labs' USDC <-> Kaspa L1 bridge (U3b, 2026-10-16).
 // v3 (inbound journal v2: token + implementation pins, status byte) with the token moved to
 // KCC-20 Last Call:
@@ -100,7 +100,7 @@ contract EthBridge(
     // init yields the same authority state, and the id is recorded here once.
     #[covenant.singleton(mode = transition)]
     function init(State prev_state, byte[] bm_prefix, byte[] bm_suffix) : (State) {
-        require(prev_state.token == ZERO32);
+        // VULNERABLE (test fixture): init can run again after the family exists.
         require(tx.outputs.length == 2);
         require(OpAuthOutputIdx(this.activeInputIndex, 0) == 0);
         byte[32] new_token = OpOutputCovenantId(1);

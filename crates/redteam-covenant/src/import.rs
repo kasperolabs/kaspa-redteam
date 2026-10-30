@@ -273,6 +273,7 @@ fn parse_one(
         payload: payload.clone(),
         pov_daa,
         block_time,
+        genesis: vec![],
     };
     let resigns = find_resigns(&specs, &as_given, keys, contract, judge)?;
     for (s, r) in specs.iter_mut().zip(resigns) {
@@ -311,7 +312,7 @@ fn parse_one(
 
     let plan_outputs = parse_outputs(outputs, &replaced, &own)?;
 
-    Ok(SpendPlan { version, inputs: plan_inputs, outputs: plan_outputs, lock_time, payload, pov_daa, block_time })
+    Ok(SpendPlan { version, inputs: plan_inputs, outputs: plan_outputs, lock_time, payload, pov_daa, block_time, genesis: vec![] })
 }
 
 /// Outputs; those paying a `replaced` funding script go to the attacker, who now owns it.

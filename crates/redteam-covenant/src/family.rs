@@ -63,7 +63,7 @@ pub fn template_parts(c: &Contract) -> Option<(Vec<u8>, Vec<u8>)> {
 }
 
 /// Decodes a redeem script of `p` (its prefix and suffix around a state).
-fn decode_state(p: &Contract, redeem: &[u8]) -> Option<StateValues> {
+pub fn decode_state(p: &Contract, redeem: &[u8]) -> Option<StateValues> {
     let (pre, suf) = template_parts(p)?;
     if !redeem.starts_with(&pre) || !redeem.ends_with(&suf) || redeem.len() < pre.len() + suf.len() {
         return None;
@@ -481,6 +481,12 @@ pub fn explore(main: &Contract, entry: &str, programs: &[Program], judge: &Judge
                         sib.file, sib_entry.name
                     ));
                     notes.push(format!("family-member: {}|{}|{}|{entry}+{}", sib.file, sib_entry.name, main.file_name, sib_entry.name));
+                    // The coins this spend created, for the next step: spending them.
+                    for (k, r) in d.redeems.iter().filter(|(k, _)| **k >= 2) {
+                        if let Some(p) = programs.iter().find(|p| decode_state(&p.contract, r).is_some()) {
+                            notes.push(format!("minted: {}|{}|{entry}+{}|{k}", p.file, faster_hex::hex_string(r), sib_entry.name));
+                        }
+                    }
                     let status = PathStatus {
                         entry: format!("{entry}+{}", sib_entry.name),
                         name: entry.to_string(),
@@ -635,4 +641,118 @@ fn variants(
         }
     }
     out
+}
+
+/// Paths that start a new covenant family (`OpOutputCovenantId(1)` of an
+/// output no input carries yet): a bridge's `init` creating its mint
+/// authority, a launch creating a token's first coins. The draft pays the
+/// coin under test's successor plus one new coin of a project program, whose
+/// covenant id consensus derives from the authorizing input and the new
+/// outputs (genesis); the scripts' own checks then fill in both scripts.
+pub fn explore_genesis(main: &Contract, entry: &str, programs: &[Program], judge: &Judge) -> Option<(PathStatus, Vec<String>)> {
+    let body = crate::tune::entry_body(&main.source, entry)?;
+    if !body.contains("OpOutputCovenantId") {
+        return None;
+    }
+    let init = main.initial_state.clone()?;
+    let (pov_daa, block_time) = crate::baseline::pov(main);
+    let main_id = crate::sandbox::sandbox_covenant_id();
+    let core = |n: &str| norm(n).replace("init", "").replace("gen", "");
+    for prog in programs.iter().filter(|p| p.contract.is_stateful()) {
+        // Before the family exists, the field that will name it is empty.
+        let mut state = init.clone();
+        for f in cov_fields(main) {
+            state.insert(f, ArtifactValue::Bytes(vec![0; 32]));
+        }
+        // The new coin's starting state: shared names from the coin under test,
+        // covenant-id fields naming it.
+        let mut st = prog.contract.initial_state.clone()?;
+        for (field, v) in st.iter_mut() {
+            let c = core(field);
+            if let Some(a) = main.args.iter().find(|a| core(&a.name) == c && a.ty == "byte[32]") {
+                *v = a.value.clone();
+            }
+        }
+        for f in cov_fields(&prog.contract) {
+            st.insert(f, ArtifactValue::Bytes(main_id.as_bytes().to_vec()));
+        }
+        let redeem = encode_state(&prog.contract, &st)?;
+        let me = main.entry(entry)?;
+        let mut args = Vec::new();
+        for p in &me.params {
+            let n = norm(&p.name);
+            args.push(ArgRecipe::Value(if n.contains("prefix") || n.contains("suffix") {
+                // `bm_prefix`: the program being created, when the name does not say.
+                let core = n.replace("prefix", "").replace("suffix", "").replace("gen", "");
+                let target = programs
+                    .iter()
+                    .find(|pr| norm(&pr.contract.contract_name) == core || norm(&pr.contract.contract_name).starts_with(&core) && core.len() >= 2)
+                    .unwrap_or(prog);
+                let (pre, suf) = template_parts(&target.contract)?;
+                ArtifactValue::Bytes(if n.contains("prefix") { pre } else { suf })
+            } else {
+                crate::sandbox::zero_value(&p.ty)
+            }));
+        }
+        let value = crate::sandbox::COVENANT_VALUE;
+        let new_value = 100_000_000u64;
+        let mut plan = SpendPlan::simple(
+            vec![
+                InputSpec::Covenant { entry: entry.to_string(), args, value, sequence: 0, state: Some(state.clone()) },
+                InputSpec::P2pk { owner: KeyRef::Attacker, value: new_value },
+            ],
+            vec![
+                OutputSpec::new(value - BASE_FEE, Dest::Successor(state.clone())),
+                OutputSpec { value: new_value, to: Dest::Raw(pay_to_script_hash_script(&redeem)), covenant: None, own: true },
+            ],
+            0,
+            pov_daa,
+            block_time,
+        );
+        plan.version = 1;
+        plan.genesis = vec![(1, vec![1])];
+        let mut d = Draft { plan, sib: usize::MAX, sib_entry: String::new(), sib_args: vec![], redeems: BTreeMap::new(), repaired: Default::default() };
+        d.redeems.insert(1, redeem);
+        for _ in 0..16 {
+            let (verdict, built) = judge.run(main, &d.plan);
+            if let Verdict::Accepted { .. } = verdict {
+                let mut variants = Vec::new();
+                // Starting the family again from the state this spend leads to.
+                if let Some(next) = d.redeems.get(&0).and_then(|r| decode_state(main, r)) {
+                    let mut p = d.plan.clone();
+                    if let Some(InputSpec::Covenant { state, .. }) = p.inputs.get_mut(0) {
+                        *state = Some(next.clone());
+                    }
+                    p.outputs[0].to = Dest::Successor(next);
+                    p.outputs[0].covenant = None;
+                    variants.push(("FAM-07", "the family started a second time, from the next state".to_string(), p,
+                        format!("`{entry}` started a second family of {} from the state its first run left, and consensus accepted it. Two families of the same program, each with a valid-looking start, can exist.", prog.file)));
+                }
+                let notes = vec![format!(
+                    "genesis: `{entry}` started a new covenant family with a coin of {}; its covenant id was derived as consensus does, from the authorizing input and the new outputs.",
+                    prog.file
+                )];
+                let status = PathStatus {
+                    entry: entry.to_string(),
+                    name: entry.to_string(),
+                    state: Some(state),
+                    baseline: Some(Baseline { plan: d.plan, signers: vec![], secrets: vec![], lock: None, variants }),
+                    unexplored_reason: None,
+                    tries: 1,
+                    imported: false,
+                };
+                return Some((status, notes));
+            }
+            let Some(built) = built else { break };
+            let failing = (0..d.plan.inputs.len()).find_map(|i| trace_failure(&built, i));
+            let Some(f) = failing else { break };
+            if std::env::var_os("REDTEAM_DEBUG").is_some() {
+                eprintln!("genesis {entry}: input {} {} a={} b={}", f.input, f.op, faster_hex::hex_string(&f.a[..f.a.len().min(40)]), faster_hex::hex_string(&f.b[..f.b.len().min(40)]));
+            }
+            if !repair(&mut d, &built, &f, main) {
+                break;
+            }
+        }
+    }
+    None
 }

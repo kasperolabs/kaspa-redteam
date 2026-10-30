@@ -120,9 +120,13 @@ The report starts with the links it found, so you can check it understood the pr
 
 **Families: several programs in one transaction.** When a path refers to another program's covenant id (`OpCovInputCount(prev_state.token)`), the tool also tries it together with a coin of that program, each coin with its own covenant id; outputs a coin authorizes belong to its family. The draft comes from the sources (which state fields hold covenant ids, which arguments are template parts, what a journal record looks like); then the scripts themselves finish it: when an input rejects the draft, the engine's execution log shows the comparison that failed and the value the script computed, often a whole output script, and the tool puts that in and runs again. That is how a bridge's mint is built: the bridge coin with a proof and one deposit, its mint authority, and the new token cell, with no bridge-specific code. A program that only took part says so in its own report.
 
-On those spends the `family` attacks change what the new coins say and run the result past every program involved (the other programs' arguments rebuilt to match, so only the rules decide): mint more than the data says (FAM-01), to the attacker (FAM-02), twice (FAM-03), in the wrong covenant family (FAM-04), the authority not continuing (FAM-05), the same proof replayed on the next state (FAM-06). `fixtures/family/` has the real ETH bridge (survives all six) and a copy with its replay protection removed (FAM-06).
+On those spends the `family` attacks change what the new coins say and run the result past every program involved (the other programs' arguments rebuilt to match, so only the rules decide): mint more than the data says (FAM-01), to the attacker (FAM-02), twice (FAM-03), in the wrong covenant family (FAM-04), the authority not continuing (FAM-05), the same proof replayed on the next state (FAM-06). `fixtures/family/` has the real ETH bridge (survives all seven) and a copy with its replay protection and run-once init check removed (FAM-06, FAM-07).
 
-Not yet covered: genesis spends that create a family (a bridge's `init`), and spends that need a program's coin the project does not include.
+**Genesis.** A path that starts a new family (it reads `OpOutputCovenantId` of an output no input carries yet: a bridge's `init` creating its mint authority, a launch creating a token's first coins) is tried with a new coin of a project program whose covenant id is derived exactly as consensus derives it, from the authorizing input's outpoint and the new outputs. FAM-07 then tries to start the family a second time from the state the first run left.
+
+**What was minted, spent.** A coin a family spend created is then spent by its owner with its own program's entries (a minted KCC-20 cell moved with `transfer`, signed by the depositor the data named), and those spends are attacked in that program's report as `minted:...` paths. If no entry can move it, the report says the minted coins may be stuck.
+
+Not yet covered: spends that need a program's coin the project does not include.
 
 ## Web page
 
@@ -193,7 +197,7 @@ A path the search cannot spend is reported as **unexplored**, never as safe. For
 
 The attacker holds only their own key, reads the chain and the mempool (so a secret revealed by a pending claim is public), and can build any transaction. An insider abusing their own signature (a payee taking more than their share) needs to know the roles; that is Tier 2.
 
-## Attack library v0.4.0
+## Attack library v0.5.0
 
 | ID | Pack | Attack | Catches |
 | --- | --- | --- | --- |
@@ -212,6 +216,7 @@ The attacker holds only their own key, reads the chain and the mempool (so a sec
 | FAM-04 | family | Coin of the right program, wrong family | New coins not required to be in the token's covenant family |
 | FAM-05 | family | Authority does not continue | Another program's coin allowed to end or move in a normal spend |
 | FAM-06 | family | Replay the same proof on the next state | Data already processed accepted again |
+| FAM-07 | family | Start the family a second time | A genesis path that can run again after the family exists |
 | FEE-01 | fees | Outputs halved, rest to fee | No bound on the fee |
 | IN-01 | inputs | Second covenant coin, shared outputs | Checks not tied to the active input |
 | IN-02 | inputs | Attacker coin at input 0 | Values read from `tx.inputs[0]` instead of `this.activeInputIndex` |
