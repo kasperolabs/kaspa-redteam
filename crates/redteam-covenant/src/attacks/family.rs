@@ -25,7 +25,9 @@ impl CovenantAttack for Fam {
                     label: label.clone(),
                     plan: plan.clone(),
                     explanation: why.clone(),
-                    severity: None,
+                    // Sweeping stray coins on a path only a key holder can spend:
+                    // that holder alone gains, from tokens sent by mistake.
+                    severity: (id == "FAM-10" && !b.permissionless()).then_some(Severity::Med),
                     takeover: false,
                 })
             })

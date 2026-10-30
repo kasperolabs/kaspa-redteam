@@ -407,7 +407,18 @@ fn repair(d: &mut Draft, built: &crate::sandbox::Built, f: &FailedCheck, main: &
             }
         }
     }
-    if (f.input == 0 || f.input == d.sib) && matches!(f.op.as_str(), "OpEqual" | "OpEqualVerify" | "OpNumEqual" | "OpNumEqualVerify") {
+    // The left side of the comparison is what was read; when a state-shaped
+    // argument holds it, that argument is what is wrong, not the coin.
+    let in_args = f.input == 0
+        && d.sib_state.is_some()
+        && matches!(d.plan.inputs.first(), Some(InputSpec::Covenant { args, .. }) if args.iter().any(|a| matches!(a,
+            ArgRecipe::Value(ArtifactValue::Object(m)) if m.values().any(|v| match v {
+                ArtifactValue::Byte(x) => f.a.len() == 1 && f.a[0] == *x,
+                ArtifactValue::Bytes(b) => b.len() >= 2 && *b == f.a,
+                ArtifactValue::Int(x) => !f.a.is_empty() && num(&f.a) == Some(*x),
+                _ => false,
+            }))));
+    if !in_args && (f.input == 0 || f.input == d.sib) && matches!(f.op.as_str(), "OpEqual" | "OpEqualVerify" | "OpNumEqual" | "OpNumEqualVerify") {
         if let Some(st) = d.sib_state.as_mut() {
             for (from, to) in [(&f.a, &f.b), (&f.b, &f.a)] {
                 let frozen = d.frozen.clone();
@@ -426,6 +437,42 @@ fn repair(d: &mut Draft, built: &crate::sandbox::Built, f: &FailedCheck, main: &
                     if *v != new {
                         *v = new;
                         return true;
+                    }
+                }
+            }
+        }
+    }
+    // A field of a state-shaped argument of the input under test
+    // (`require(rest.ownerScheme == OWNER_P2SH)`, `rest.amount >= locked`).
+    // Not for the minter shape, whose typed arguments come from the source.
+    if f.input == 0 && d.sib_state.is_some() {
+        let eq = matches!(f.op.as_str(), "OpEqual" | "OpEqualVerify" | "OpNumEqual" | "OpNumEqualVerify");
+        let ge = matches!(f.op.as_str(), "OpGreaterThanOrEqual" | "OpGreaterThan");
+        if let Some(InputSpec::Covenant { args, .. }) = d.plan.inputs.get_mut(0) {
+            for a in args.iter_mut() {
+                let ArgRecipe::Value(ArtifactValue::Object(m)) = a else { continue };
+                for (from, to) in [(&f.a, &f.b), (&f.b, &f.a)] {
+                    if !eq && !(ge && std::ptr::eq(from, &f.a)) {
+                        continue;
+                    }
+                    let hit = m.iter_mut().find(|(_, v)| match v {
+                        ArtifactValue::Byte(x) => from.len() == 1 && from[0] == *x,
+                        ArtifactValue::Int(x) => num(from) == Some(*x) && (!from.is_empty() || ge),
+                        ArtifactValue::Bytes(b) => b.len() == from.len() && b.len() >= 2 && b == from,
+                        _ => false,
+                    });
+                    if let Some((_, v)) = hit {
+                        let new = match v {
+                            ArtifactValue::Byte(_) => ArtifactValue::Byte(to.first().copied().unwrap_or(0)),
+                            ArtifactValue::Int(_) => {
+                                ArtifactValue::Int(num(to).unwrap_or(0) + if f.op == "OpGreaterThan" { 1 } else { 0 })
+                            }
+                            _ => ArtifactValue::Bytes(to.clone()),
+                        };
+                        if *v != new {
+                            *v = new;
+                            return true;
+                        }
                     }
                 }
             }
@@ -588,6 +635,9 @@ fn sibling_args(sib: &Program, entry: &str, programs: &[Program], d: &Draft) -> 
             }
             // A coin owned by a covenant id authorizes with no signature: the
             // witness is the path byte alone (normal path).
+            // Owned by a script hash (owner scheme P2SH): the path byte, then
+            // the index of the input that carries that script (the coin under test).
+            TypeArtifact::Bytes if n.contains("witness") && p2sh_owned(sib, d) => ArtifactValue::Bytes(vec![0x00, 0x00]),
             TypeArtifact::Bytes if n.contains("witness") => ArtifactValue::Bytes(vec![0x00]),
             TypeArtifact::Sig => ArtifactValue::Bytes(vec![0; 65]),
             ty => crate::sandbox::zero_value(ty),
@@ -987,8 +1037,38 @@ fn explore_seeded(
                 }
             };
             let mut args = Vec::new();
+            let flat: String = body.split_whitespace().collect();
             for p in &me.params {
                 let n = norm(&p.name);
+                // A signature the entry checks against a key of the contract
+                // (`checkSig(s, beneficiary)`): that party signs.
+                if matches!(p.ty, TypeArtifact::Sig) {
+                    let key = main
+                        .args
+                        .iter()
+                        .find(|a| flat.contains(&format!("checkSig({},{})", p.name, a.name)))
+                        .and_then(|a| main.wallets.parties.iter().position(|w| w.label == a.name))
+                        .map(KeyRef::Party)
+                        .unwrap_or(KeyRef::Attacker);
+                    args.push(ArgRecipe::Sig(key));
+                    continue;
+                }
+                // A state of the other program the entry checks field by field
+                // (`TokenState rest`): start from the coin spent alongside.
+                if let TypeArtifact::Struct { name } = &p.ty {
+                    if let Some(fields) = main.struct_fields(name) {
+                        let same = fields.len() == sib.contract.state_fields.len()
+                            && fields.iter().zip(sib.contract.state_fields.iter()).all(|(a, b)| a.1 == b.1);
+                        if same {
+                            let mut m = BTreeMap::new();
+                            for ((fname, _), (sname, _)) in fields.iter().zip(sib.contract.state_fields.iter()) {
+                                m.insert(fname.clone(), sib_state.get(sname).cloned().unwrap_or(ArtifactValue::Int(0)));
+                            }
+                            args.push(ArgRecipe::Value(ArtifactValue::Object(m)));
+                            continue;
+                        }
+                    }
+                }
                 args.push(ArgRecipe::Value(if matches!(p.ty, TypeArtifact::FixedBytes { len: 32 }) && n.contains("owner") {
                     // Whoever the spend pays: an honest party the tool holds.
                     ArtifactValue::Bytes(owner.clone())
@@ -1004,13 +1084,26 @@ fn explore_seeded(
                 } else if matches!(p.ty, TypeArtifact::Int) && !in_state {
                     // An index the spender names: the other program's input,
                     // or its second new coin.
-                    let flat: String = body.split_whitespace().collect();
                     let q = &p.name;
-                    if [format!("CovenantId({q})"), format!("tx.inputs[{q}]"), format!("StateWithTemplate({q},"), format!("InputTemplate({q},")]
-                        .iter()
-                        .any(|x| flat.contains(x.as_str()))
-                        || flat.contains(&format!(",{q},")) && flat.contains("InputTemplate(")
+                    let has = |pats: &[String]| pats.iter().any(|x| flat.contains(x.as_str()));
+                    if has(&[
+                        format!("validateOutputState({q},"),
+                        format!("validateOutputStateWithTemplate({q},"),
+                        format!("validateOutputStateWithInputTemplate({q},"),
+                        format!("OpOutputCovenantId({q})"),
+                    ]) {
+                        // The other program's new coin comes first.
+                        ArtifactValue::Int(0)
+                    } else if has(&[
+                        format!("OpInputCovenantId({q})"),
+                        format!("tx.inputs[{q}]"),
+                        format!("readInputStateWithTemplate({q},"),
+                        format!("readInputState({q})"),
+                    ]) || flat.contains(&format!(",{q},")) && flat.contains("InputTemplate(")
                     {
+                        ArtifactValue::Int(1)
+                    } else if flat.contains(&format!("tx.outputs[{q}].scriptPubKey==this.activeScriptPubKey")) {
+                        // Its own continuation.
                         ArtifactValue::Int(1)
                     } else if flat.contains(&format!("tx.outputs[{q}]")) {
                         ArtifactValue::Int(2)
@@ -1137,8 +1230,8 @@ fn explore_seeded(
                                 Borrow::On => stranger_borrow(main, &d, sib).map(|p| ("BOR", String::new(), p, String::new())).into_iter().collect(),
                                 Borrow::OnPlusOne => vec![],
                             },
+                            signers: d.plan.signers(),
                             plan: d.plan,
-                            signers: vec![],
                             secrets: if body.contains("proof") || body.contains("seal") { vec!["the tool's test proof".into()] } else { vec![] },
                             lock: None,
                         }),
@@ -1405,8 +1498,14 @@ fn variants(
     }
     if let Some(v) = stray_coin(main, d, sib, programs) {
         if let Some(p) = finish(v) {
-            out.push(("FAM-10", "a second coin the coin under test owns, swept to the attacker".into(), p,
-                format!("a second coin of {} owned by this covenant's id (tokens someone sent to it, or a second deposit) was spent in the same transaction and its tokens went to the attacker, and the transaction was accepted. The covenant checked only the coin it was pointed at. Tokens sent to its id can be taken by anyone; if anyone is meant to sweep them, this is by design.", sib.file)));
+            let signed = !d.plan.signers().is_empty();
+            let who = if signed {
+                "Only the holder of the key this path requires can do it, but they take tokens that were never under their schedule or terms."
+            } else {
+                "Tokens sent to it can be taken by anyone; if anyone is meant to sweep them, this is by design."
+            };
+            out.push(("FAM-10", "a second coin the coin under test owns, swept to the spender".into(), p,
+                format!("a second coin of {} owned by this contract (tokens someone sent to it, or a second deposit) was spent in the same transaction and its tokens went to the spender, and the transaction was accepted. The contract checked only the coin it was pointed at. {who}", sib.file)));
         }
     }
     out
@@ -1419,8 +1518,9 @@ fn stray_coin(main: &Contract, d: &Draft, sib: &Program, programs: &[Program]) -
     let _ = programs;
     let st = d.sib_state.clone()?;
     let main_id = crate::sandbox::sandbox_covenant_id();
-    let owned = cov_fields(&sib.contract).iter().any(|f| st.get(f) == Some(&ArtifactValue::Bytes(main_id.as_bytes().to_vec())));
-    if !owned || d.delegate.is_some() || d.sib_key.is_some() {
+    let by_id = cov_fields(&sib.contract).iter().any(|f| st.get(f) == Some(&ArtifactValue::Bytes(main_id.as_bytes().to_vec())));
+    let by_script = p2sh_owned(sib, d);
+    if !(by_id || by_script) || d.delegate.is_some() || d.sib_key.is_some() {
         return None;
     }
     let follower = sib.contract.entries.iter().find(|e| {
@@ -1434,8 +1534,10 @@ fn stray_coin(main: &Contract, d: &Draft, sib: &Program, programs: &[Program]) -
     stray.insert("amount".into(), ArtifactValue::Int(stray_amount));
     let redeem = encode_state(&sib.contract, &stray)?;
     let artifact = sib.contract.artifact.as_ref()?;
-    // Owned by a covenant id: the witness is empty (no path byte for a follower).
-    let args: Vec<ArtifactValue> = follower.params.iter().map(|_| ArtifactValue::Bytes(vec![])).collect();
+    // Owned by a covenant id: the witness is empty (no path byte for a follower);
+    // by a script hash: the index of the input that carries the script.
+    let w = if by_script { vec![0x00] } else { vec![] };
+    let args: Vec<ArtifactValue> = follower.params.iter().map(|_| ArtifactValue::Bytes(w.clone())).collect();
     let mut script = silverscript_abi::encode_contract_entry_sig_script(artifact, &sib.contract.contract_name, &follower.name, &args).ok()?;
     script.extend(crate::sandbox::push_data(&redeem).ok()?);
     let id = Hash::from_bytes(sib.cov_id);
@@ -2502,4 +2604,13 @@ impl<'a> BorrowTx<'a> {
         plan.version = 1;
         Some(plan)
     }
+}
+
+/// The coin spent alongside is owned by a script hash (its owner scheme is the
+/// program's P2SH constant).
+fn p2sh_owned(sib: &Program, d: &Draft) -> bool {
+    let Some(st) = &d.sib_state else { return false };
+    let Some((sel, _)) = cov_branch(&sib.contract) else { return false };
+    let consts = source_consts(&sib.contract.source);
+    consts.iter().any(|(n, v)| n.contains("P2SH") && st.get(&sel) == Some(v))
 }

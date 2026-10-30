@@ -154,15 +154,17 @@ pub fn detect(files: &[ProjectFile], overrides: &BTreeMap<String, String>) -> Re
             // The other program is the one whose state is the struct the call
             // reads or writes (`KCC20State { amount, owner, ... }`); a program
             // without that state cannot be it, even when it is the only other one.
+            // By field types in order, so a contract that names the fields its
+            // own way (`tokTemplate`, `ownerScheme`) still matches.
             let structs: Vec<Vec<String>> = a
                 .contract
                 .artifact
                 .as_ref()
-                .map(|art| art.structs.values().map(|s| s.fields.iter().map(|f| f.name.clone()).collect()).collect())
+                .map(|art| art.structs.values().map(|s| s.fields.iter().map(|f| format!("{:?}", f.ty)).collect()).collect())
                 .unwrap_or_default();
             let fits = |b: &Compiled| {
                 structs.is_empty() || {
-                    let mine: Vec<String> = b.contract.state_fields.iter().map(|(n, _)| n.clone()).collect();
+                    let mine: Vec<String> = b.contract.state_fields.iter().map(|(_, t)| format!("{t:?}")).collect();
                     !mine.is_empty() && structs.iter().any(|s| *s == mine)
                 }
             };

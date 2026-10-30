@@ -1,5 +1,15 @@
 # Changelog
 
+## Tool 0.12.0 (library 0.9.0)
+
+- Token locks and vesting: a plain script that holds KCC-20 coins through owner scheme P2SH (its own script hash as owner) and checks them field by field. Tried on a public vesting contract with the KCC-20 reference: `claim` explored (signed by the beneficiary), SIG-01/02 and FAM-01 to FAM-05 rejected.
+  - A template argument links to the program whose state has the same field types in the same order as the struct the call uses, whatever the fields are called (`tokTemplate`, `ownerScheme`).
+  - A signature argument checked against a key of the contract (`checkSig(s, beneficiary)`) is signed by that party; the path is recorded as signed by it.
+  - A state-shaped argument (`TokenState rest`) starts as the coin spent alongside and is repaired field by field from the entry's checks.
+  - Index arguments: an output the entry validates as a state or a covenant id is the other program's new coin; an output checked against the entry's own script is its continuation.
+  - A coin owned by a script hash is spent with the index of the input carrying that script as its witness.
+- FAM-10 also covers coins owned by the contract's script hash. On a path only a key holder can spend, it is reported as medium: only that holder gains, from tokens sent by mistake.
+
 ## Tool 0.11.0 (library 0.9.0)
 
 - KCC-20 borrowed receive (section 5 of the spec). New attack pack `borrow`:
