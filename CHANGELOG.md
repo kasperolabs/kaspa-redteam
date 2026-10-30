@@ -1,5 +1,10 @@
 # Changelog
 
+## Tool 0.12.1 (library 0.9.0)
+
+- Links for contracts that read the token by hand (no `readInputStateWithTemplate`): when the project has exactly one token program (a leader transfer entry and a follower), a `byte[32]` value named for a template (`tokenTplHash`, `tokenTemplateHash`) is its template hash, and ints named for the template's prefix and suffix are their lengths. A value the file uses as its own template hash is left alone.
+- A covenant-id value kept in state (`byte[32] tokenCovId = init_tokenCovId;`) is linked through the field it sets.
+
 ## Tool 0.12.0 (library 0.9.0)
 
 - Token locks and vesting: a plain script that holds KCC-20 coins through owner scheme P2SH (its own script hash as owner) and checks them field by field. Tried on a public vesting contract with the KCC-20 reference: `claim` explored (signed by the beneficiary), SIG-01/02 and FAM-01 to FAM-05 rejected.

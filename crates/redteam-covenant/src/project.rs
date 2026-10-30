@@ -195,6 +195,31 @@ pub fn detect(files: &[ProjectFile], overrides: &BTreeMap<String, String>) -> Re
                 }
             }
         }
+        // Templates of a token program, by name: when the project has exactly
+        // one token program (a leader transfer entry and a follower), a
+        // `byte[32]` value named for a template (`tokenTplHash`) is its template
+        // hash, and ints named for its prefix and suffix are their lengths.
+        // Contracts that read the token by hand never call the built-ins above.
+        let tokens: Vec<usize> = (0..compiled.len()).filter(|bi| *bi != ai && is_token_program(&compiled[*bi].contract)).collect();
+        if tokens.len() == 1 {
+            let b = &compiled[tokens[0]];
+            for arg in a.contract.args.iter().filter(|x| x.origin != "override") {
+                let n = norm(&arg.name);
+                // A value the file uses as its own template hash is not the token's.
+                if !(n.contains("tpl") || n.contains("template")) || per_file[ai].values.contains_key(&arg.name) || arg.origin == "own template hash" {
+                    continue;
+                }
+                if arg.ty == "byte[32]" && !n.contains("prefix") && !n.contains("suffix") {
+                    per_file[ai].values.insert(arg.name.clone(), (b.contract.contract_name.clone(), b.template.clone()));
+                    links.push(Link { from: a.file.clone(), via: arg.name.clone(), to: b.file.clone(), kind: "template" });
+                } else if arg.ty == "int" && (n.contains("prefix") || n.contains("suffix")) && !per_file[ai].ints.contains_key(&arg.name) {
+                    if let Some((pre, suf)) = crate::family::template_parts(&b.contract) {
+                        let v = if n.contains("prefix") { pre.len() } else { suf.len() };
+                        per_file[ai].ints.insert(arg.name.clone(), (b.contract.contract_name.clone(), v as i64));
+                    }
+                }
+            }
+        }
         // Covenant ids by role: a constructor value the source compares to a
         // coin's covenant id (`OpInputCovenantId(i) == tokenCovId`) names the
         // family of the program its template links to. In the sandbox that
@@ -209,17 +234,32 @@ pub fn detect(files: &[ProjectFile], overrides: &BTreeMap<String, String>) -> Re
                     if per_file[ai].values.contains_key(n) {
                         continue;
                     }
-                    let pat = format!("== {n}");
-                    let mut used = false;
-                    let mut from = 0;
-                    while let Some(at) = src[from..].find(&pat) {
-                        let at = from + at;
-                        let after = src[at + pat.len()..].chars().next().unwrap_or(' ');
-                        let before = &src[at.saturating_sub(60)..at];
-                        if !(after.is_alphanumeric() || after == '_') && before.contains("CovenantId(") {
-                            used = true;
+                    // The value under its own name, or a state field set from it
+                    // (`byte[32] tokenCovId = init_tokenCovId;`).
+                    let mut names = vec![n.clone()];
+                    for l in a.contract.source.lines() {
+                        let t = l.split("//").next().unwrap_or("").trim().trim_end_matches(';');
+                        if let Some((lhs, rhs)) = t.split_once('=') {
+                            if rhs.trim() == n.as_str() && lhs.trim_start().starts_with("byte[32]") {
+                                if let Some(field) = lhs.split_whitespace().last() {
+                                    names.push(field.to_string());
+                                }
+                            }
                         }
-                        from = at + pat.len();
+                    }
+                    let mut used = false;
+                    for nm in &names {
+                        let pat = format!("== {nm}");
+                        let mut from = 0;
+                        while let Some(at) = src[from..].find(&pat) {
+                            let at = from + at;
+                            let after = src[at + pat.len()..].chars().next().unwrap_or(' ');
+                            let before = &src[at.saturating_sub(60)..at];
+                            if !(after.is_alphanumeric() || after == '_') && before.contains("CovenantId(") {
+                                used = true;
+                            }
+                            from = at + pat.len();
+                        }
                     }
                     if used {
                         per_file[ai].values.insert(n.clone(), (b.contract.contract_name.clone(), crate::family::family_id(&b.file).to_vec()));
@@ -524,4 +564,20 @@ fn template_calls(source: &str) -> Vec<Vec<String>> {
         }
     }
     out
+}
+
+/// A token program: a leader transfer entry (new states and a witness) and a
+/// follower that runs only next to a leader (KCC-20 `transfer` / `transfer_delegator`).
+fn is_token_program(c: &Contract) -> bool {
+    let leader = c.entries.iter().any(|e| {
+        e.params.len() >= 2
+            && matches!(e.params[0].ty, silverscript_abi::TypeArtifact::DynamicArray { .. } | silverscript_abi::TypeArtifact::FixedArray { .. })
+            && e.params.iter().any(|p| p.name.to_ascii_lowercase().contains("witness"))
+    });
+    let follower = c.entries.iter().any(|e| {
+        !e.params.is_empty()
+            && e.params.iter().all(|p| p.name.to_ascii_lowercase().contains("witness"))
+            && crate::tune::entry_body(&c.source, &e.name).is_some_and(|b| b.contains("!= this.activeInputIndex"))
+    });
+    leader && follower
 }
