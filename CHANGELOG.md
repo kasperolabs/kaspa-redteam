@@ -1,5 +1,9 @@
 # Changelog
 
+## Tool 0.9.1 (library 0.7.0)
+
+- Fix: FAM-01 to FAM-04 no longer change the spender's own new coin (a buyer's tokens from an ask). Making it a look-alike only cheats the spender; 0.9.0 reported that as FAM-04 on `settle+transfer[n>0]`.
+
 ## Tool 0.9.0 (library 0.7.0)
 
 - A fourth family shape: orders. A coin with no state of its own that names a token by constructor values (`tokenCovId`, `tokenTplHash`) and trades with a KCC-20 coin in the same transaction (a bid paying KAS for tokens, an ask selling its tokens). Benchmarked on a bid and an ask from another team's order book with the KCC-20 reference program: `fill`, `settle` (refund) and `settle[n>0]` (fill) explored, 0 findings.

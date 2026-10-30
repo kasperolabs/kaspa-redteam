@@ -1123,6 +1123,15 @@ fn variants(
         .keys()
         .copied()
         .filter(|k| *k >= 2 || stateless && d.plan.outputs.get(*k).and_then(|o| o.covenant).map(|c| c.covenant_id) == Some(sib_id))
+        // The spender's own new coin (a buyer's tokens): changing it only
+        // cheats the spender.
+        .filter(|k| {
+            let mine = main.wallets.attacker.xonly().to_vec();
+            !d.redeems
+                .get(k)
+                .and_then(|r| decode_state(&sib.contract, r))
+                .is_some_and(|st| cov_fields(&sib.contract).iter().any(|f| st.get(f) == Some(&ArtifactValue::Bytes(mine.clone()))))
+        })
         .collect();
     let attacker = main.wallets.attacker.xonly().to_vec();
     let base = format!("{:?}", d.plan);
