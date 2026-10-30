@@ -1,5 +1,14 @@
 # Changelog
 
+## Tool 0.8.0 (library 0.7.0)
+
+- A third family shape: a market that owns another program's coin by covenant id and computes every coin itself (a bonding curve). The repair loop now also sets the owned coin's state from the market's checks, moves the market's own state where a comparison asks (`m <= sold`), sets number arguments (`m > 0`) and output values (`successor >= in + cost`, paid by the funding coin).
+- A second coin of the other program when the market asks for one (`OpCovInputCount(token) == 2`): owned by an honest key, spent with the follower entry (`transfer_delegator`), signed again after every change. Extra new coins are dropped when the market asks for fewer.
+- FAM-09: take tokens without paying. On paths with no proof and no signature, the new coins go to the attacker and the coin under test gets no KAS.
+- Benchmark three: `fixtures/family/curve` (a bonding curve and the KCC-20 reference program). init, buy and sell explored, 0 findings; a copy that forgets the price is caught by FAM-09.
+- Helper functions are followed: `require_owner_authorized(owner, owner_scheme, ...)` maps its parameters to the state fields, so ownership checks inside helpers are found.
+- Fixes: the spend map no longer says "a valid proof" for family paths that take no proof; a genesis path's `*_out` index arguments get the first new output.
+
 ## Tool 0.7.0 (library 0.6.0)
 
 - Templates link by role: the template argument of `readInputStateWithTemplate` / `validateOutputStateWithTemplate` / `validateOutputStateWithInputTemplate` gets the other program's template hash whatever it is called, and length arguments in the same call get its prefix and suffix lengths.

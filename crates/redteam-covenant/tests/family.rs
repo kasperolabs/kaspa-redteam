@@ -85,3 +85,33 @@ fn upstream_minter_family() {
     let minter = vuln.iter().find(|r| r.0 == "kcc20-minter.sil").unwrap();
     assert!(minter.1.contains(&"FAM-08".to_string()), "minting power not caught: {:?}", minter.1);
 }
+
+fn run_files(dir: &str, names: &[&str]) -> Vec<(String, Vec<String>, usize, Vec<String>)> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/family").join(dir);
+    let files: Vec<ProjectFile> =
+        names.iter().map(|n| ProjectFile { name: n.to_string(), source: std::fs::read_to_string(dir.join(n)).unwrap() }).collect();
+    let (_, reports) = project::run(&files, &BTreeMap::new(), &[], &Judge::new()).unwrap();
+    reports
+        .iter()
+        .map(|r| {
+            let fam_run = r.results.iter().filter(|x| x.id.starts_with("FAM-") && !matches!(x.outcome, redteam_core::Outcome::Skipped { .. })).count();
+            let gaps = r.context["spend_map"].as_array().map(|m| m.iter().filter(|x| x["explored"] != true).map(|x| x["path"].to_string()).collect()).unwrap_or_default();
+            (r.subject_name.clone(), r.findings().map(|f| f.id.clone()).collect(), fam_run, gaps)
+        })
+        .collect()
+}
+
+/// A market: a bonding curve that owns its token coin by covenant id and
+/// computes every coin itself. init, buy and sell (with a seller's second coin)
+/// are explored and survive; a copy that forgets the price is caught by FAM-09.
+#[test]
+fn curve_family() {
+    let fixed = run_files("curve", &["curve.sil", "KCC20.sil"]);
+    let curve = fixed.iter().find(|r| r.0 == "curve.sil").unwrap();
+    assert!(curve.1.is_empty(), "the curve should survive: {:?}", curve.1);
+    assert!(curve.3.is_empty(), "curve gaps: {:?}", curve.3);
+    assert!(curve.2 >= 6, "family attacks on the curve: {}", curve.2);
+    let vuln = run_files("curve_vulnerable", &["curve.sil", "KCC20.sil"]);
+    let curve = vuln.iter().find(|r| r.0 == "curve.sil").unwrap();
+    assert!(curve.1.contains(&"FAM-09".to_string()), "free tokens not caught: {:?}", curve.1);
+}

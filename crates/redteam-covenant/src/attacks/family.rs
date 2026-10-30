@@ -93,3 +93,8 @@ fam!(FAM08, "FAM-08", "Hand out the minting power",
     "require(!recipientState.isMinter);  // only the authority's own continuation may carry it",
     "A recipient gets a coin that can mint, and from then on mints as much as they like. The token's supply is no longer controlled by the contract.",
     47);
+fam!(FAM09, "FAM-09", "Take tokens without paying",
+    "a permissionless path that hands out coins of another program without the coin under test receiving KAS for them",
+    "require(tx.outputs[next].value >= tx.inputs[this.activeInputIndex].value + price(sold, m));",
+    "Nothing but a price check stands between anyone and the program's tokens. Without it, the first spender after deployment takes the supply.",
+    48);

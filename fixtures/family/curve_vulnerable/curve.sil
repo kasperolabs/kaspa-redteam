@@ -1,0 +1,335 @@
+pragma silverscript ^0.1.0;
+
+// =============================================================================
+// curve.sil  —  "the curve"
+//
+// A KCC-20 token whose entire market is this one covenant coin.
+//
+//   * Anyone can BUY tokens by sending KAS to this coin.
+//   * Anyone can SELL tokens back to this coin for KAS.
+//   * The price is a public line: unit number s costs  P0 + s * 9/2000  sompi.
+//   * The KAS in this coin (the reserve) can leave ONLY through SELL.
+//
+// There is no owner, no admin key and no withdraw path. Not the author, not
+// anyone. If you can read this file top to bottom you have read every rule.
+//
+// Token side: the unsold supply sits in ONE ordinary KCC-20 coin (the KCC-20
+// reference program, unmodified) whose owner is this covenant's id
+// (owner_scheme 0x04). That coin can only move when this coin is spent in the
+// same transaction, and this file says what that transaction must look like.
+// Holders trade their own coins with the normal KCC-20 transfer; the curve is
+// never involved in that.
+//
+// Two covenants, two covenant ids:
+//   C = this coin's id (the curve), read at run time with OpInputCovenantId
+//   T = the token's id, recorded in state by `init`, all zeros before that
+//
+// Three entries, nothing else: init (once), buy, sell.
+//
+// v2 (Oct 29, 2026): buy and sell keep the KAS inside the curve's own token
+// coin (found by kaspa-redteam, OUT-03). A different program from v1: a new
+// curve, new ids.
+//
+// Written for silverc v1.0.0 (kaspanet/silverscript 3ed9733), the dialect the
+// KCC-20 reference program is written in (argent-lang/kcc20-reference c8a0871).
+// =============================================================================
+
+contract Curve(
+    byte[32] init_token_covid,       // T; all zeros until init
+    int      init_sold,              // units out of the curve
+    byte[32] init_ext_commitment     // the token's KCC-20 extension_commitment (zeros for a plain token)
+) {
+    // -------------------------------------------------------------------------
+    // The price line. All integers: sompi and whole units (0 decimals).
+    //
+    //   SUPPLY = 200,000,000 units
+    //   p(s)   = P0 + s * SLOPE_NUM / SLOPE_DEN     sompi, for unit number s
+    //   P0     = 100,000 sompi = 0.001 KAS          the first unit
+    //   slope  = 9/2000 = 0.0045 sompi per unit, so the last unit (s = SUPPLY-1)
+    //            costs 999,999.99.. sompi: the 0.01 KAS ceiling.
+    //
+    //   BUY  m units when `sold` are out:  pay  sum of p(s) for s in [sold, sold+m)
+    //   SELL m units when `sold` are out:  get  sum of p(s) for s in [sold-m, sold)
+    //
+    //   sum of p(s) over [a, a+m)  =  P0*m  +  SLOPE_NUM * m*(2a+m-1) / (2*SLOPE_DEN)
+    //
+    //   One division, the last one. BUY rounds it UP, SELL rounds it DOWN, so
+    //   every rounding favors the reserve, and a buy followed by a sell never
+    //   returns more than it cost. Largest intermediate value:
+    //   9 * 200e6 * 400e6 = 7.2e17, inside the 8-byte script number.
+    // -------------------------------------------------------------------------
+    int constant SUPPLY    = 200000000;
+    int constant P0        = 100000;
+    int constant SLOPE_NUM = 9;
+    int constant SLOPE_DEN = 2000;
+
+    // FEE HOOK (v2, not active). A per-trade fee would be one more require on a
+    // fixed-index output in `buy` and `sell`, e.g.
+    //     require(tx.outputs[FEE_OUT].value >= fee(m));
+    // v1 has no fee output and no fee constant, on purpose.
+
+    // -------------------------------------------------------------------------
+    // The KCC-20 reference program, pinned. These three values name the exact
+    // token script this curve accepts, byte for byte: template hash, and the
+    // lengths of the bytes before and after the state (1 and 3885).
+    // kcc20-reference c8a0871, compiled by silverc v1.0.0.
+    // -------------------------------------------------------------------------
+    byte[32] constant KCC20_TEMPLATE      = byte[32](0x9703112ee6e3555107cd168858992b77d3b74f655205b2b463b1f9ec2ec73cf7);
+    byte[4]  constant KCC20_PREFIX_LEN_LE = byte[4](0x01000000);
+    byte[4]  constant KCC20_SUFFIX_LEN_LE = byte[4](0x2d0f0000);
+
+    byte constant OWNER_COVENANT_ID = 0x04;   // KCC-20 owner_scheme: a covenant id owns the coin
+    byte constant BORROW_DISABLED   = 0x00;   // KCC-20 borrow_scheme: nobody can push tokens into a coin
+
+    byte[32] constant ZERO32 = byte[32](0x0000000000000000000000000000000000000000000000000000000000000000);
+
+    // A KCC-20 coin's state, in the reference program's field order.
+    struct Kcc20Cell {
+        byte[32] template;              // gen__kcc20_template
+        int      amount;
+        byte[32] owner;
+        byte     owner_scheme;
+        byte     borrow_scheme;
+        byte[32] borrow_guard;
+        byte[32] extension_commitment;
+    }
+
+    // -------------------------------------------------------------------------
+    // State of this coin (the three constructor values, in this order)
+    // -------------------------------------------------------------------------
+    byte[32] token_covid    = init_token_covid;      // T
+    int      sold           = init_sold;             // units out of the curve
+    byte[32] ext_commitment = init_ext_commitment;   // fixed for life
+
+    // -------------------------------------------------------------------------
+    // Math
+    // -------------------------------------------------------------------------
+
+    // Twice the sum of s for s in [from, from+m):  m * (2*from + m - 1)
+    function area2(int from, int m) : int {
+        return m * (2 * from + m - 1);
+    }
+
+    // What a buyer pays for m units when `sold_now` are out. Rounded UP.
+    function cost(int sold_now, int m) : int {
+        return P0 * m + (SLOPE_NUM * area2(sold_now, m) + (2 * SLOPE_DEN - 1)) / (2 * SLOPE_DEN);
+    }
+
+    // What a seller gets for m units when `sold_now` are out. Rounded DOWN.
+    function refund(int sold_now, int m) : int {
+        return P0 * m + (SLOPE_NUM * area2(sold_now - m, m)) / (2 * SLOPE_DEN);
+    }
+
+    // -------------------------------------------------------------------------
+    // Token-side helpers
+    // -------------------------------------------------------------------------
+
+    // The curve's own coin, spent at input `cell_in`, as it must come in: the
+    // pinned reference program, owned by this covenant, borrow disabled, holding
+    // exactly the unsold units.
+    function check_unsold_cell(int cell_in, byte[32] me) {
+        Kcc20Cell cell = readInputStateWithTemplate(
+            cell_in,
+            int(KCC20_PREFIX_LEN_LE),
+            int(KCC20_SUFFIX_LEN_LE),
+            KCC20_TEMPLATE
+        );
+        require(cell.template == KCC20_TEMPLATE);
+        require(cell.owner == me);
+        require(cell.owner_scheme == OWNER_COVENANT_ID);
+        require(cell.borrow_scheme == BORROW_DISABLED);
+        require(cell.extension_commitment == ext_commitment);
+        require(cell.amount == SUPPLY - sold);
+    }
+
+    // Output `out_idx` must be a KCC-20 coin in state `want`, with the same
+    // script as the coin spent at `cell_in`.
+    function expect_cell(int out_idx, int cell_in, Kcc20Cell want) {
+        validateOutputStateWithInputTemplate(
+            out_idx,
+            want,
+            cell_in,
+            int(KCC20_PREFIX_LEN_LE),
+            int(KCC20_SUFFIX_LEN_LE),
+            KCC20_TEMPLATE
+        );
+    }
+
+    // Output `out_idx` must be the curve's own coin holding `amount` units, and
+    // at least the KAS the coin came in with (nobody skims the coin's deposit).
+    function expect_unsold_cell(int out_idx, int cell_in, byte[32] me, int amount) {
+        require(tx.outputs[out_idx].value >= tx.inputs[cell_in].value);
+        Kcc20Cell want = Kcc20Cell {
+            template: KCC20_TEMPLATE,
+            amount: amount,
+            owner: me,
+            owner_scheme: OWNER_COVENANT_ID,
+            borrow_scheme: BORROW_DISABLED,
+            borrow_guard: ZERO32,
+            extension_commitment: ext_commitment,
+        };
+        expect_cell(out_idx, cell_in, want);
+    }
+
+    // This coin's one successor: the only output bound to C. Returns its index.
+    function successor(byte[32] me) : int {
+        require(OpAuthOutputCount(this.activeInputIndex) == 1);
+        require(OpCovOutputCount(me) == 1);
+        return OpAuthOutputIdx(this.activeInputIndex, 0);
+    }
+
+    // =========================================================================
+    // ENTRY 1: init.  Runs once, on the fresh curve coin.
+    //
+    // The curve's id C must exist before a KCC-20 coin can name C as its owner,
+    // and the curve must record the token's id T. So the token is born in the
+    // transaction that spends the fresh curve coin:
+    //
+    //   inputs : [0] the curve coin (C; state T = zeros, sold = 0)
+    //            [1] a plain KAS coin: pays the fee, funds the token coin, and
+    //                authorizes the token's genesis (KCC-23 metadata, if wanted,
+    //                is bound by letting this input spend the preparation tx)
+    //   outputs: [0] the curve successor (C continues; T recorded; same KAS)
+    //            [1] the token's genesis coin (T is born here, authorized by
+    //                input 1; state: SUPPLY units owned by C)
+    //            [2] change
+    //
+    // Nobody signs init. It is permissionless because its result is fixed by
+    // this file: the only free choice is which coin authorizes the token's
+    // genesis, and that choice is what T is. The KAS in the curve coin cannot
+    // move (successor value >= input value).
+    // =========================================================================
+    entry init(int cell_out, byte[] kcc20_prefix, byte[] kcc20_suffix) {
+        require(token_covid == ZERO32);                 // once
+        require(sold == 0);
+        byte[32] me = OpInputCovenantId(this.activeInputIndex);
+
+        // The token being born here: a genesis output, not a continuation of
+        // some existing token (no input carries its id).
+        byte[32] new_token = OpOutputCovenantId(cell_out);
+        require(!(new_token == ZERO32));
+        require(OpCovInputCount(new_token) == 0);
+
+        // Its state: the whole supply, owned by this covenant, borrow disabled.
+        Kcc20Cell genesis = Kcc20Cell {
+            template: KCC20_TEMPLATE,
+            amount: SUPPLY,
+            owner: me,
+            owner_scheme: OWNER_COVENANT_ID,
+            borrow_scheme: BORROW_DISABLED,
+            borrow_guard: ZERO32,
+            extension_commitment: ext_commitment,
+        };
+        validateOutputStateWithTemplate(cell_out, genesis, kcc20_prefix, kcc20_suffix, KCC20_TEMPLATE);
+
+        // Our successor records T and keeps every sompi.
+        int curve_out = successor(me);
+        require(curve_out != cell_out);
+        require(tx.outputs[curve_out].value >= tx.inputs[this.activeInputIndex].value);
+        validateOutputState(curve_out, State {
+            token_covid: new_token,
+            sold: 0,
+            ext_commitment: ext_commitment,
+        });
+    }
+
+    // =========================================================================
+    // ENTRY 2: buy m units.
+    //
+    //   inputs : [0] the curve coin (C)
+    //            [1] the curve's KCC-20 coin (T; leader; entry `transfer`,
+    //                witness 0x00: "normal path, owner is a covenant id, and
+    //                that covenant is an input of this transaction")
+    //            [2..] the buyer's KAS coins
+    //   outputs: [0] the curve successor: value >= in + cost(m), sold + m
+    //            [1] the curve's KCC-20 coin: SUPPLY - sold - m units (T)
+    //            [2] the buyer's KCC-20 coin: m units, owned by to_owner (T)
+    //            [3] the buyer's change
+    //
+    // The curve pins both token outputs. The reference program itself enforces
+    // that token amounts add up, so once output [1] holds SUPPLY-sold-m, output
+    // [2] holds exactly m. The buyer's coin may be owned by anyone but C.
+    // =========================================================================
+    entry buy(int m, byte[32] to_owner, byte to_scheme, byte to_borrow, byte[32] to_guard) {
+        require(!(token_covid == ZERO32));              // initialized
+        require(m > 0);
+        require(sold + m <= SUPPLY);
+        byte[32] me = OpInputCovenantId(this.activeInputIndex);
+        require(!(to_owner == me));                     // the curve never sells to itself
+
+        // Token side: exactly our coin in; our coin and the buyer's coin out.
+        require(OpCovInputCount(token_covid) == 1);
+        int cell_in = OpCovInputIdx(token_covid, 0);
+        check_unsold_cell(cell_in, me);
+        require(OpCovOutputCount(token_covid) == 2);
+        expect_unsold_cell(OpCovOutputIdx(token_covid, 0), cell_in, me, SUPPLY - sold - m);
+        Kcc20Cell bought = Kcc20Cell {
+            template: KCC20_TEMPLATE,
+            amount: m,
+            owner: to_owner,
+            owner_scheme: to_scheme,
+            borrow_scheme: to_borrow,
+            borrow_guard: to_guard,
+            extension_commitment: ext_commitment,
+        };
+        expect_cell(OpCovOutputIdx(token_covid, 1), cell_in, bought);
+
+        // KAS side: the reserve grows by at least cost(m). What else the buyer
+        // puts in the transaction is his business; nothing leaves this coin.
+        int curve_out = successor(me);
+        require(tx.outputs[curve_out].value >= tx.inputs[this.activeInputIndex].value);
+        validateOutputState(curve_out, State {
+            token_covid: token_covid,
+            sold: sold + m,
+            ext_commitment: ext_commitment,
+        });
+    }
+
+    // =========================================================================
+    // ENTRY 3: sell one KCC-20 coin back, whole.
+    //
+    //   inputs : [0] the curve coin (C)
+    //            [1] the curve's KCC-20 coin (T; leader; entry `transfer`, witness 0x00)
+    //            [2] the seller's KCC-20 coin (T; delegate; entry
+    //                `transfer_delegator`, the seller's own witness)
+    //            [3..] the seller's KAS coins, if the fee needs them
+    //   outputs: [0] the curve successor: value >= in - refund(m), sold - m
+    //            [1] the curve's KCC-20 coin: SUPPLY - sold + m units (T)
+    //            [2] the seller's KAS, wherever he likes: whatever the successor leaves
+    //
+    // m is read off the seller's coin, which is spent whole. To sell part of a
+    // coin, split it first with a normal KCC-20 transfer. A coin owned by C
+    // itself cannot be sold (tokens sent to the curve's id are frozen).
+    // =========================================================================
+    entry sell() {
+        require(!(token_covid == ZERO32));              // initialized
+        byte[32] me = OpInputCovenantId(this.activeInputIndex);
+
+        // Token side: our coin leads, the seller's coin follows, our coin alone comes out.
+        require(OpCovInputCount(token_covid) == 2);
+        int cell_in = OpCovInputIdx(token_covid, 0);
+        check_unsold_cell(cell_in, me);
+        Kcc20Cell offered = readInputStateWithTemplate(
+            OpCovInputIdx(token_covid, 1),
+            int(KCC20_PREFIX_LEN_LE),
+            int(KCC20_SUFFIX_LEN_LE),
+            KCC20_TEMPLATE
+        );
+        require(!(offered.owner == me));
+        int m = offered.amount;
+        require(m > 0);
+        require(m <= sold);
+        require(OpCovOutputCount(token_covid) == 1);
+        expect_unsold_cell(OpCovOutputIdx(token_covid, 0), cell_in, me, SUPPLY - sold + m);
+
+        // KAS side: the reserve shrinks by at most refund(m). (By the reserve
+        // invariant the right-hand side is never negative.)
+        int curve_out = successor(me);
+        require(tx.outputs[curve_out].value >= tx.inputs[this.activeInputIndex].value - refund(sold, m));
+        validateOutputState(curve_out, State {
+            token_covid: token_covid,
+            sold: sold - m,
+            ext_commitment: ext_commitment,
+        });
+    }
+}
