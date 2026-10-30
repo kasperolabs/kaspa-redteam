@@ -207,6 +207,9 @@ pub fn search_all(contract: &Contract, judge: &Judge) -> Vec<PathStatus> {
         out.extend(level);
         i += 1;
     }
+    // A token program's borrowed receive (KCC-20 section 5): built directly,
+    // one path per borrow scheme, since the search never turns borrowing on.
+    out.extend(crate::family::borrow_paths(contract, judge));
     out
 }
 

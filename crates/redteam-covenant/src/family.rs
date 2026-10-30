@@ -280,6 +280,18 @@ struct Draft {
     /// The output whose script was put in last: with two outputs carrying the
     /// same script, the next fix goes to the other one.
     last_fix: Option<usize>,
+    /// Fields of the other coin the repairs may not move (its borrow settings
+    /// and amount when the test is about them).
+    frozen: Vec<String>,
+}
+
+/// How the coin spent alongside is set up: as found, with borrowing turned on,
+/// or after a stranger borrowed it once (one token unit more, fixed).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Borrow {
+    No,
+    On,
+    OnPlusOne,
 }
 
 #[derive(Clone)]
@@ -398,7 +410,8 @@ fn repair(d: &mut Draft, built: &crate::sandbox::Built, f: &FailedCheck, main: &
     if (f.input == 0 || f.input == d.sib) && matches!(f.op.as_str(), "OpEqual" | "OpEqualVerify" | "OpNumEqual" | "OpNumEqualVerify") {
         if let Some(st) = d.sib_state.as_mut() {
             for (from, to) in [(&f.a, &f.b), (&f.b, &f.a)] {
-                let hit = st.iter_mut().find(|(_, v)| match v {
+                let frozen = d.frozen.clone();
+                let hit = st.iter_mut().filter(|(n, _)| !frozen.contains(n)).find(|(_, v)| match v {
                     ArtifactValue::Byte(x) => from.len() == 1 && from[0] == *x,
                     ArtifactValue::Int(x) => num(from) == Some(*x) && !from.is_empty(),
                     ArtifactValue::Bytes(b) => b.len() == from.len() && b.len() >= 2 && b == from,
@@ -818,7 +831,7 @@ fn add_or_drop_coins(d: &mut Draft, f: &FailedCheck, sib: &Program, key: &secp25
 /// Tries to spend `entry` of `main` together with a coin of another program of
 /// the project, creating coins of a third. Returns the accepted spend.
 pub fn explore(main: &Contract, entry: &str, programs: &[Program], judge: &Judge) -> Option<(PathStatus, Vec<String>)> {
-    explore_seeded(main, entry, programs, judge, None, 1)
+    explore_seeded(main, entry, programs, judge, None, 1, Borrow::No)
 }
 
 /// The other branches of an entry that switches on a number argument
@@ -831,7 +844,7 @@ pub fn explore_branches(main: &Contract, entry: &str, programs: &[Program], judg
     let mut out = Vec::new();
     for p in me.params.iter().filter(|p| matches!(p.ty, TypeArtifact::Int)) {
         if flat.contains(&format!("if({}==0)", p.name)) {
-            let Some((mut st, notes)) = explore_seeded(main, entry, programs, judge, Some((p.name.clone(), 1)), 1) else { continue };
+            let Some((mut st, notes)) = explore_seeded(main, entry, programs, judge, Some((p.name.clone(), 1)), 1, Borrow::No) else { continue };
             st.entry = format!("{}[{}>0]", st.entry, p.name);
             let shape = |s: &PathStatus| s.baseline.as_ref().map(|b| b.plan.outputs.len());
             let first = shape(&st);
@@ -839,7 +852,7 @@ pub fn explore_branches(main: &Contract, entry: &str, programs: &[Program], judg
             // The other coin holding more than the trade takes (an order that
             // keeps a remainder and continues): a path of its own when the
             // spend comes out different.
-            if let Some((mut st2, notes2)) = explore_seeded(main, entry, programs, judge, Some((p.name.clone(), 1)), 3) {
+            if let Some((mut st2, notes2)) = explore_seeded(main, entry, programs, judge, Some((p.name.clone(), 1)), 3, Borrow::No) {
                 if shape(&st2) != first {
                     st2.entry = format!("{}[{}>0,rest kept]", st2.entry, p.name);
                     out.push((st2, notes2));
@@ -857,6 +870,7 @@ fn explore_seeded(
     judge: &Judge,
     seed: Option<(String, i64)>,
     scale: i64,
+    borrow: Borrow,
 ) -> Option<(PathStatus, Vec<String>)> {
     let body = crate::tune::entry_body(&main.source, entry)?;
     let main_cov = cov_fields(main);
@@ -906,6 +920,17 @@ fn explore_seeded(
         if scale > 1 {
             if let Some(ArtifactValue::Int(a)) = sib_state.get_mut("amount") {
                 *a = a.saturating_mul(scale);
+            }
+        }
+        if borrow != Borrow::No {
+            let (Some(sf), Some(gf)) = borrow_fields(&sib_state) else { continue };
+            // Threshold zero: anyone may borrow by adding one token unit.
+            sib_state.insert(sf, ArtifactValue::Byte(1));
+            sib_state.insert(gf, ArtifactValue::Bytes(vec![0; 32]));
+            if borrow == Borrow::OnPlusOne {
+                if let Some(ArtifactValue::Int(a)) = sib_state.get_mut("amount") {
+                    *a += 1;
+                }
             }
         }
         let keyed = !in_state && !body.contains("readInputState");
@@ -1048,7 +1073,11 @@ fn explore_seeded(
                     args[i] = ArgRecipe::Value(ArtifactValue::Int(*v));
                 }
             }
-            let mut d = Draft { plan, sib: 1, sib_entry: sib_entry.name.clone(), sib_args: vec![], redeems: BTreeMap::new(), repaired: Default::default(), sib_state: Some(sib_state.clone()), delegate: None, sib_key, last_fix: None };
+            let mut d = Draft { plan, sib: 1, sib_entry: sib_entry.name.clone(), sib_args: vec![], redeems: BTreeMap::new(), repaired: Default::default(), sib_state: Some(sib_state.clone()), delegate: None, sib_key, last_fix: None, frozen: match borrow {
+                Borrow::No => vec![],
+                Borrow::On => sib_state.keys().filter(|k| norm(k).contains("borrow")).cloned().collect(),
+                Borrow::OnPlusOne => sib_state.keys().filter(|k| norm(k).contains("borrow") || k.as_str() == "amount").cloned().collect(),
+            } };
             let mut notes = Vec::new();
             for _ in 0..24 {
                 d.sib_args = sibling_args(sib, &sib_entry.name, programs, &d)?;
@@ -1098,7 +1127,16 @@ fn explore_seeded(
                         name: entry.to_string(),
                         state: Some(state.clone()),
                         baseline: Some(Baseline {
-                            variants: variants(main, &d, sib, &sib_state, programs, judge),
+                            variants: match borrow {
+                                Borrow::No => {
+                                    let mut v = variants(main, &d, sib, &sib_state, programs, judge);
+                                    v.extend(borrow_variants(main, entry, programs, judge, &seed, scale, &d, sib, keyed));
+                                    v
+                                }
+                                // The stranger's borrow of the coin as it is now, for the caller.
+                                Borrow::On => stranger_borrow(main, &d, sib).map(|p| ("BOR", String::new(), p, String::new())).into_iter().collect(),
+                                Borrow::OnPlusOne => vec![],
+                            },
                             plan: d.plan,
                             signers: vec![],
                             secrets: if body.contains("proof") || body.contains("seal") { vec!["the tool's test proof".into()] } else { vec![] },
@@ -1192,6 +1230,7 @@ fn variants(
         delegate: d.delegate.clone(),
         sib_key: d.sib_key,
         last_fix: d.last_fix,
+        frozen: d.frozen.clone(),
     };
     // A new coin with its state changed: re-encoded with its own program.
     let restate = |d: &Draft, k: usize, f: &dyn Fn(&mut StateValues)| -> Option<Draft> {
@@ -1412,6 +1451,7 @@ fn stray_coin(main: &Contract, d: &Draft, sib: &Program, programs: &[Program]) -
         delegate: None,
         sib_key: None,
         last_fix: d.last_fix,
+        frozen: d.frozen.clone(),
     };
     v.plan.inputs.insert(
         d.sib + 1,
@@ -1533,7 +1573,7 @@ pub fn explore_genesis(main: &Contract, entry: &str, programs: &[Program], judge
         );
         plan.version = 1;
         plan.genesis = vec![(1, vec![1])];
-        let mut d = Draft { plan, sib: usize::MAX, sib_entry: String::new(), sib_args: vec![], redeems: BTreeMap::new(), repaired: Default::default(), sib_state: None, delegate: None, sib_key: None, last_fix: None };
+        let mut d = Draft { plan, sib: usize::MAX, sib_entry: String::new(), sib_args: vec![], redeems: BTreeMap::new(), repaired: Default::default(), sib_state: None, delegate: None, sib_key: None, last_fix: None, frozen: vec![] };
         d.redeems.insert(1, redeem);
         for _ in 0..16 {
             let (verdict, built) = judge.run(main, &d.plan);
@@ -1830,7 +1870,7 @@ pub fn explore_owned(main: &Contract, entry: &str, programs: &[Program], judge: 
                 block_time,
             );
             plan.version = 1;
-            let mut d = Draft { plan, sib: 1, sib_entry: sib_entry.name.clone(), sib_args: vec![], redeems: redeems.clone(), repaired: Default::default(), sib_state: None, delegate: None, sib_key: None, last_fix: None };
+            let mut d = Draft { plan, sib: 1, sib_entry: sib_entry.name.clone(), sib_args: vec![], redeems: redeems.clone(), repaired: Default::default(), sib_state: None, delegate: None, sib_key: None, last_fix: None, frozen: vec![] };
             for _ in 0..16 {
                 let mut sa = sibling_args(sib, &sib_entry.name, programs, &d)?;
                 // Signature-typed arguments of the controlled coin: never checked on
@@ -1917,6 +1957,7 @@ fn owned_variants(
             delegate: d.delegate.clone(),
             sib_key: d.sib_key,
             last_fix: d.last_fix,
+            frozen: d.frozen.clone(),
         };
         if let Some(InputSpec::Covenant { args, .. }) = v.plan.inputs.get_mut(0) {
             let mut fi = 0;
@@ -2030,5 +2071,435 @@ mod alias_tests {
         let a = super::aliases(src);
         assert_eq!(a.get("gen__glob_owner").map(String::as_str), Some("owner"));
         assert_eq!(a.get("gen__glob_owner_scheme").map(String::as_str), Some("owner_scheme"));
+    }
+}
+
+/// The state fields that hold the borrow scheme and its guard, if the program has them.
+fn borrow_fields(st: &StateValues) -> (Option<String>, Option<String>) {
+    let f = |part: &str| st.keys().find(|k| {
+        let n = norm(k);
+        n.contains("borrow") && n.contains(part)
+    }).cloned();
+    (f("scheme"), f("guard"))
+}
+
+/// A coin the coin under test holds by covenant id, with borrowing turned on:
+/// if the covenant accepts it, a stranger can spend that coin without the
+/// covenant (a borrowed receive, KCC-20 section 5). Whether the covenant still
+/// works afterwards decides how bad that is.
+#[allow(clippy::too_many_arguments)]
+fn borrow_variants(
+    main: &Contract,
+    entry: &str,
+    programs: &[Program],
+    judge: &Judge,
+    seed: &Option<(String, i64)>,
+    scale: i64,
+    d: &Draft,
+    sib: &Program,
+    keyed: bool,
+) -> Vec<(&'static str, String, SpendPlan, String)> {
+    let Some(st) = d.sib_state.clone() else { return vec![] };
+    let main_id = crate::sandbox::sandbox_covenant_id().as_bytes().to_vec();
+    let owned = !keyed && cov_fields(&sib.contract).iter().any(|f| st.get(f) == Some(&ArtifactValue::Bytes(main_id.clone())));
+    let (Some(sf), Some(gf)) = borrow_fields(&st) else { return vec![] };
+    if !owned {
+        return vec![];
+    }
+    let file = &sib.file;
+    match explore_seeded(main, entry, programs, judge, seed.clone(), scale, Borrow::On) {
+        None => {
+            // Refused: the honest spend with a borrowable coin, for the record.
+            let mut v = Draft {
+                plan: d.plan.clone(),
+                sib: d.sib,
+                sib_entry: d.sib_entry.clone(),
+                sib_args: vec![],
+                redeems: d.redeems.clone(),
+                repaired: d.repaired.clone(),
+                sib_state: d.sib_state.clone(),
+                delegate: d.delegate.clone(),
+                sib_key: d.sib_key,
+                last_fix: d.last_fix,
+                frozen: vec![],
+            };
+            if let Some(s2) = v.sib_state.as_mut() {
+                s2.insert(sf, ArtifactValue::Byte(1));
+                s2.insert(gf, ArtifactValue::Bytes(vec![0; 32]));
+            }
+            let Some(args) = sibling_args(sib, &v.sib_entry, programs, &v) else { return vec![] };
+            v.sib_args = args;
+            if rebuild_sibling(&mut v, sib, &st).is_none() {
+                return vec![];
+            }
+            let why = String::new();
+            let _ = why;
+            vec![("BOR-01", "the coin it holds with borrowing on".into(), v.plan, String::new())]
+        }
+        Some((a, _)) => {
+            let Some(borrow_tx) = a.baseline.as_ref().and_then(|b| b.variants.iter().find(|x| x.0 == "BOR")).map(|x| x.2.clone()) else {
+                return vec![];
+            };
+            let bricked = explore_seeded(main, entry, programs, judge, seed.clone(), scale, Borrow::OnPlusOne).is_none();
+            if bricked {
+                vec![("BOR-01", "a stranger borrows the coin it holds; the path no longer works".into(), borrow_tx, format!(
+                    "the covenant accepted a coin of {file} with borrowing turned on (anyone may borrow it by adding one token unit), and a stranger did so with no part of the covenant in the transaction. Afterwards this path could not be spent any more: the coin's amount no longer matches what the covenant expects. One token unit from anyone bricks it."
+                ))]
+            } else {
+                vec![("BOR-02", "a stranger borrows the coin it holds".into(), borrow_tx, format!(
+                    "the covenant accepted a coin of {file} with borrowing turned on (anyone may borrow it by adding one token unit), and a stranger did so with no part of the covenant in the transaction. This path still works afterwards, but the coin's outpoint changed: anyone can keep moving it, so every transaction prepared against it fails."
+                ))]
+            }
+        }
+    }
+}
+
+/// A stranger's borrowed receive of the coin spent alongside: that coin leads a
+/// transfer on the borrow path, the stranger's own coin of the same token
+/// follows, and the borrowed coin comes back with one token unit more.
+fn stranger_borrow(main: &Contract, d: &Draft, sib: &Program) -> Option<SpendPlan> {
+    let st = d.sib_state.clone()?;
+    let artifact = sib.contract.artifact.as_ref()?;
+    let leader = sib.contract.entries.iter().find(|e| e.name == d.sib_entry)?;
+    let follower = sib.contract.entries.iter().find(|e| {
+        e.name != d.sib_entry
+            && !e.params.is_empty()
+            && e.params.iter().all(|p| norm(&p.name).contains("witness"))
+            && crate::tune::entry_body(&sib.contract.source, &e.name).is_some_and(|b| b.contains("!= this.activeInputIndex"))
+    })?;
+    let attacker = main.wallets.attacker.xonly().to_vec();
+    let mut mine = st.clone();
+    for f in cov_fields(&sib.contract) {
+        mine.insert(f, ArtifactValue::Bytes(attacker.clone()));
+    }
+    if let Some((sel, _)) = cov_branch(&sib.contract) {
+        let p2pk = source_consts(&sib.contract.source)
+            .into_iter()
+            .find(|(n, _)| n.contains("P2PK") && !n.contains("P2PKH"))
+            .map(|(_, v)| v)
+            .unwrap_or(ArtifactValue::Byte(0));
+        mine.insert(sel, p2pk);
+    }
+    let (Some(sf), _) = borrow_fields(&st) else { return None };
+    mine.insert(sf, ArtifactValue::Byte(0));
+    let theirs: i64 = 100_000_000;
+    mine.insert("amount".into(), ArtifactValue::Int(theirs));
+    let mut grown = st.clone();
+    if let Some(ArtifactValue::Int(a)) = grown.get_mut("amount") {
+        *a += 1;
+    }
+    let mut left = mine.clone();
+    left.insert("amount".into(), ArtifactValue::Int(theirs - 1));
+    // The leader's arguments: the two new states, and the borrow path byte.
+    let (TypeArtifact::DynamicArray { item } | TypeArtifact::FixedArray { item, .. }) = &leader.params.first()?.ty else { return None };
+    let TypeArtifact::Struct { name } = item.as_ref() else { return None };
+    let fields = sib.contract.struct_fields(name)?;
+    let mut args = vec![ArtifactValue::Array(vec![struct_obj(&fields, &grown), struct_obj(&fields, &left)])];
+    for p in leader.params.iter().skip(1) {
+        args.push(if norm(&p.name).contains("witness") { ArtifactValue::Bytes(vec![0x01]) } else { crate::sandbox::zero_value(&p.ty) });
+    }
+    let lead_redeem = encode_state(&sib.contract, &st)?;
+    let mut lead_script = silverscript_abi::encode_contract_entry_sig_script(artifact, &sib.contract.contract_name, &leader.name, &args).ok()?;
+    lead_script.extend(crate::sandbox::push_data(&lead_redeem).ok()?);
+    let marker = vec![0xa5u8; 65];
+    let fargs: Vec<ArtifactValue> = follower.params.iter().map(|_| ArtifactValue::Bytes(marker.clone())).collect();
+    let mut f_script = silverscript_abi::encode_contract_entry_sig_script(artifact, &sib.contract.contract_name, &follower.name, &fargs).ok()?;
+    let at = f_script.windows(65).position(|w| w == marker.as_slice())?;
+    let f_redeem = encode_state(&sib.contract, &mine)?;
+    f_script.extend(crate::sandbox::push_data(&f_redeem).ok()?);
+    let id = Hash::from_bytes(sib.cov_id);
+    let value = 100_000_000u64;
+    let (pov_daa, block_time) = crate::baseline::pov(main);
+    let mut plan = SpendPlan::simple(
+        vec![
+            InputSpec::Raw(RawInput {
+                outpoint: None,
+                signature_script: lead_script,
+                sequence: 0,
+                sig_op_count: 0,
+                compute_budget: 2_000,
+                entry: UtxoEntry::new(value, pay_to_script_hash_script(&lead_redeem), UTXO_DAA, false, Some(id)),
+                target: false,
+                signed: false,
+                resign: None,
+            }),
+            InputSpec::Raw(RawInput {
+                outpoint: None,
+                signature_script: f_script,
+                sequence: 0,
+                sig_op_count: 1,
+                compute_budget: 2_000,
+                entry: UtxoEntry::new(value, pay_to_script_hash_script(&f_redeem), UTXO_DAA, false, Some(id)),
+                target: false,
+                signed: false,
+                resign: Some(crate::sandbox::Resign { keypair: main.wallets.attacker.keypair, at }),
+            }),
+            InputSpec::P2pk { owner: KeyRef::Attacker, value: value },
+        ],
+        vec![
+            OutputSpec { value, to: Dest::Raw(pay_to_script_hash_script(&encode_state(&sib.contract, &grown)?)), covenant: Some(CovenantBinding::new(0, id)), own: false },
+            OutputSpec { value, to: Dest::Raw(pay_to_script_hash_script(&encode_state(&sib.contract, &left)?)), covenant: Some(CovenantBinding::new(0, id)), own: true },
+            OutputSpec::new(value - BASE_FEE, Dest::Key(KeyRef::Attacker)),
+        ],
+        0,
+        pov_daa,
+        block_time,
+    );
+    plan.version = 1;
+    Some(plan)
+}
+
+/// The borrowed receive of a token program, one path per enabled borrow
+/// scheme (KCC-20 section 5): the coin leads a transfer on the borrow path
+/// without its owner, a coin of the borrower's follows and adds one token unit.
+/// Each comes with the hostile versions BOR-03 to BOR-07.
+pub fn borrow_paths(c: &Contract, judge: &Judge) -> Vec<PathStatus> {
+    if std::env::var_os("REDTEAM_DEBUG").is_some() {
+        eprintln!("borrow paths for {}: state {}", c.file_name, c.initial_state.is_some());
+    }
+    let Some(init) = c.initial_state.clone() else { return vec![] };
+    let (Some(sf), Some(gf)) = borrow_fields(&init) else { return vec![] };
+    let Some(leader) = c.entries.iter().find(|e| {
+        e.params.len() >= 2
+            && matches!(e.params[0].ty, TypeArtifact::DynamicArray { .. } | TypeArtifact::FixedArray { .. })
+            && e.params.iter().any(|p| norm(&p.name).contains("witness"))
+    }) else {
+        return vec![];
+    };
+    let Some(follower) = c.entries.iter().find(|e| {
+        e.name != leader.name
+            && !e.params.is_empty()
+            && e.params.iter().all(|p| norm(&p.name).contains("witness"))
+            && crate::tune::entry_body(&c.source, &e.name).is_some_and(|b| b.contains("!= this.activeInputIndex"))
+    }) else {
+        return vec![];
+    };
+    let mut cov_id = [0u8; 32];
+    cov_id.copy_from_slice(crate::sandbox::sandbox_covenant_id().as_bytes().as_slice());
+    let mut out = Vec::new();
+    for (scheme, label) in [(1u8, "threshold"), (2, "key"), (3, "chain")] {
+        let entry = format!("{}[borrow:{label}]", leader.name);
+        let Some(b) = BorrowTx::new(c, cov_id, &init, &sf, &gf, scheme) else { continue };
+        let honest = b.build(&leader.name, &follower.name, &Twist::None);
+        let ok = honest.as_ref().is_some_and(|p| {
+            let v = judge.run(c, p);
+            if std::env::var_os("REDTEAM_DEBUG").is_some() {
+                eprintln!("borrow {label}: {:?}", v.0);
+                if let Some(b) = &v.1 {
+                    if let Some(f) = (0..p.inputs.len()).find_map(|i| crate::sandbox::trace_failure(b, i)) {
+                        eprintln!("  input {} {} a={} b={}", f.input, f.op, faster_hex::hex_string(&f.a), faster_hex::hex_string(&f.b));
+                    }
+                }
+            }
+            matches!(v.0, Verdict::Accepted { .. })
+        });
+        if !ok {
+            out.push(PathStatus {
+                entry,
+                name: leader.name.clone(),
+                state: Some(b.state.clone()),
+                baseline: None,
+                unexplored_reason: Some("a borrowed receive (KCC-20 section 5) the tool built was refused; the program may not support this borrow scheme".into()),
+                tries: 1,
+                imported: false,
+            });
+            continue;
+        }
+        let mut variants = Vec::new();
+        let tw: [(&'static str, Twist, &str, String); 5] = [
+            ("BOR-03", Twist::TakeOwner, "the borrowed coin comes back owned by the borrower", format!("on a borrowed receive the coin came back owned by the borrower and the transaction was accepted. Anyone allowed to borrow takes the coin.")),
+            ("BOR-04", Twist::NoIncrease, "the borrowed coin comes back with no more tokens", format!("on a borrowed receive the coin came back with the same token amount and the transaction was accepted. The borrow rule requires an increase; without it, anyone allowed to borrow moves the coin for free.")),
+            ("BOR-05", Twist::LessKas, "the borrowed coin comes back with less KAS", format!("on a borrowed receive the coin came back with less KAS than it had and the borrower kept the difference, and the transaction was accepted.")),
+            ("BOR-06", Twist::Unauthorized, "a borrow without the borrow key or link", format!("a borrowed receive was authorized by the wrong key or a wrong hash-chain link, and the transaction was accepted. Anyone can borrow a coin whose owner allowed only one borrower.")),
+            ("BOR-07", Twist::Settings, "the borrowed coin comes back with other borrow settings", format!("on a borrowed receive the coin came back with its borrow scheme or guard changed, and the transaction was accepted. The borrower rewrites who may borrow next, or locks the owner out of their own settings.")),
+        ];
+        for (id, t, what, why) in tw {
+            if matches!(t, Twist::Unauthorized) && scheme == 1 {
+                continue; // anyone may borrow under the threshold scheme
+            }
+            if let Some(p) = b.build(&leader.name, &follower.name, &t) {
+                variants.push((id, what.to_string(), p, why));
+            }
+        }
+        out.push(PathStatus {
+            entry,
+            name: leader.name.clone(),
+            state: Some(b.state.clone()),
+            baseline: Some(Baseline { plan: honest.unwrap(), signers: vec![], secrets: vec![], lock: None, variants }),
+            unexplored_reason: None,
+            tries: 1,
+            imported: false,
+        });
+    }
+    out
+}
+
+enum Twist {
+    None,
+    TakeOwner,
+    NoIncrease,
+    LessKas,
+    Unauthorized,
+    Settings,
+}
+
+struct BorrowTx<'a> {
+    c: &'a Contract,
+    cov_id: [u8; 32],
+    state: StateValues,
+    scheme: u8,
+    sf: String,
+    gf: String,
+    /// Who borrows: the attacker for the threshold scheme (anyone may), an
+    /// honest key the owner named for the key and chain schemes.
+    borrower: secp256k1::Keypair,
+    next_guard: Vec<u8>,
+}
+
+impl<'a> BorrowTx<'a> {
+    fn new(c: &'a Contract, cov_id: [u8; 32], init: &StateValues, sf: &str, gf: &str, scheme: u8) -> Option<Self> {
+        let borrower = match scheme {
+            1 => c.wallets.attacker.keypair,
+            2 => crate::wallets::Wallet::derive("borrower").keypair,
+            _ => crate::wallets::Wallet::derive("borrow link").keypair,
+        };
+        let pk = borrower.x_only_public_key().0.serialize().to_vec();
+        let next = vec![0x11u8; 32];
+        let guard = match scheme {
+            1 => vec![0u8; 32],
+            2 => pk.clone(),
+            _ => {
+                let mut pre = next.clone();
+                pre.extend(&pk);
+                blake3::hash(&pre).as_bytes().to_vec()
+            }
+        };
+        let mut state = init.clone();
+        state.insert(sf.to_string(), ArtifactValue::Byte(scheme));
+        state.insert(gf.to_string(), ArtifactValue::Bytes(guard.clone()));
+        let next_guard = if scheme == 3 { next } else { guard };
+        Some(Self { c, cov_id, state, scheme, sf: sf.to_string(), gf: gf.to_string(), borrower, next_guard })
+    }
+
+    fn build(&self, leader: &str, follower: &str, t: &Twist) -> Option<SpendPlan> {
+        let c = self.c;
+        let artifact = c.artifact.as_ref()?;
+        let lead_entry = c.entry(leader)?;
+        let attacker = c.wallets.attacker.xonly().to_vec();
+        let bpk = self.borrower.x_only_public_key().0.serialize().to_vec();
+        // The borrower's own coin: P2PK owner, borrowing off.
+        let mut theirs = self.state.clone();
+        for f in cov_fields(c) {
+            theirs.insert(f, ArtifactValue::Bytes(bpk.clone()));
+        }
+        if let Some((sel, _)) = cov_branch(c) {
+            let p2pk = source_consts(&c.source)
+                .into_iter()
+                .find(|(n, _)| n.contains("P2PK") && !n.contains("P2PKH"))
+                .map(|(_, v)| v)
+                .unwrap_or(ArtifactValue::Byte(0));
+            theirs.insert(sel, p2pk);
+        }
+        theirs.insert(self.sf.clone(), ArtifactValue::Byte(0));
+        theirs.insert(self.gf.clone(), ArtifactValue::Bytes(vec![0; 32]));
+        let amount = match self.state.get("amount") {
+            Some(ArtifactValue::Int(a)) => *a,
+            _ => return None,
+        };
+        let add: i64 = 1;
+        theirs.insert("amount".into(), ArtifactValue::Int(100_000_000));
+        let mut grown = self.state.clone();
+        grown.insert("amount".into(), ArtifactValue::Int(amount + add));
+        grown.insert(self.gf.clone(), ArtifactValue::Bytes(self.next_guard.clone()));
+        let mut left = theirs.clone();
+        left.insert("amount".into(), ArtifactValue::Int(100_000_000 - add));
+        match t {
+            Twist::TakeOwner => {
+                for f in cov_fields(c) {
+                    grown.insert(f, ArtifactValue::Bytes(attacker.clone()));
+                }
+            }
+            Twist::NoIncrease => {
+                grown.insert("amount".into(), ArtifactValue::Int(amount));
+                left.insert("amount".into(), ArtifactValue::Int(100_000_000));
+            }
+            Twist::Settings => {
+                grown.insert(self.sf.clone(), ArtifactValue::Byte(if self.scheme == 1 { 2 } else { 1 }));
+                grown.insert(self.gf.clone(), ArtifactValue::Bytes(attacker.clone()));
+            }
+            _ => {}
+        }
+        let (TypeArtifact::DynamicArray { item } | TypeArtifact::FixedArray { item, .. }) = &lead_entry.params.first()?.ty else { return None };
+        let TypeArtifact::Struct { name } = item.as_ref() else { return None };
+        let fields = c.struct_fields(name)?;
+        // The borrow witness: path byte 1, then what the scheme asks for.
+        let marker = vec![0xa5u8; 65];
+        let mut witness = vec![0x01];
+        match self.scheme {
+            2 => witness.extend(&marker),
+            3 => {
+                let wrong = matches!(t, Twist::Unauthorized);
+                witness.extend(if wrong { vec![0x22; 32] } else { self.next_guard.clone() });
+                witness.extend(&bpk);
+                witness.extend(&marker);
+            }
+            _ => {}
+        }
+        let mut args = vec![ArtifactValue::Array(vec![struct_obj(&fields, &grown), struct_obj(&fields, &left)])];
+        for p in lead_entry.params.iter().skip(1) {
+            args.push(if norm(&p.name).contains("witness") { ArtifactValue::Bytes(witness.clone()) } else { crate::sandbox::zero_value(&p.ty) });
+        }
+        let lead_redeem = encode_state(c, &self.state)?;
+        let mut lead_script = silverscript_abi::encode_contract_entry_sig_script(artifact, &c.contract_name, leader, &args).ok()?;
+        let lead_sig = lead_script.windows(65).position(|w| w == marker.as_slice());
+        lead_script.extend(crate::sandbox::push_data(&lead_redeem).ok()?);
+        let lead_key = if matches!(t, Twist::Unauthorized) { c.wallets.attacker.keypair } else { self.borrower };
+        let f_entry = c.entry(follower)?;
+        let fargs: Vec<ArtifactValue> = f_entry.params.iter().map(|_| ArtifactValue::Bytes(marker.clone())).collect();
+        let mut f_script = silverscript_abi::encode_contract_entry_sig_script(artifact, &c.contract_name, follower, &fargs).ok()?;
+        let at = f_script.windows(65).position(|w| w == marker.as_slice())?;
+        let f_redeem = encode_state(c, &theirs)?;
+        f_script.extend(crate::sandbox::push_data(&f_redeem).ok()?);
+        let id = Hash::from_bytes(self.cov_id);
+        let value = 100_000_000u64;
+        let kept = if matches!(t, Twist::LessKas) { value / 2 } else { value };
+        let (pov_daa, block_time) = crate::baseline::pov(c);
+        let mut plan = SpendPlan::simple(
+            vec![
+                InputSpec::Raw(RawInput {
+                    outpoint: None,
+                    signature_script: lead_script,
+                    sequence: 0,
+                    sig_op_count: if lead_sig.is_some() { 1 } else { 0 },
+                    compute_budget: 2_000,
+                    entry: UtxoEntry::new(value, pay_to_script_hash_script(&lead_redeem), UTXO_DAA, false, Some(id)),
+                    target: true,
+                    signed: false,
+                    resign: lead_sig.map(|at| crate::sandbox::Resign { keypair: lead_key, at }),
+                }),
+                InputSpec::Raw(RawInput {
+                    outpoint: None,
+                    signature_script: f_script,
+                    sequence: 0,
+                    sig_op_count: 1,
+                    compute_budget: 2_000,
+                    entry: UtxoEntry::new(value, pay_to_script_hash_script(&f_redeem), UTXO_DAA, false, Some(id)),
+                    target: false,
+                    signed: false,
+                    resign: Some(crate::sandbox::Resign { keypair: self.borrower, at }),
+                }),
+                InputSpec::P2pk { owner: KeyRef::Attacker, value },
+            ],
+            vec![
+                OutputSpec { value: kept, to: Dest::Raw(pay_to_script_hash_script(&encode_state(c, &grown)?)), covenant: Some(CovenantBinding::new(0, id)), own: false },
+                OutputSpec { value, to: Dest::Raw(pay_to_script_hash_script(&encode_state(c, &left)?)), covenant: Some(CovenantBinding::new(0, id)), own: true },
+                OutputSpec::new(value + (value - kept) - BASE_FEE, Dest::Key(KeyRef::Attacker)),
+            ],
+            0,
+            pov_daa,
+            block_time,
+        );
+        plan.version = 1;
+        Some(plan)
     }
 }

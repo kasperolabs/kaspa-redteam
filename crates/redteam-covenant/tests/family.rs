@@ -117,4 +117,23 @@ fn curve_family() {
     let vuln = run_files("curve_vulnerable", &["curve.sil", "KCC20.sil"]);
     let curve = vuln.iter().find(|r| r.0 == "curve.sil").unwrap();
     assert!(curve.1.contains(&"FAM-09".to_string()), "free tokens not caught: {:?}", curve.1);
+    // Without the borrow check on the coin it holds, one borrowed token unit bricks it.
+    let borrowable = run_files("curve_borrow", &["curve.sil", "KCC20.sil"]);
+    let curve = borrowable.iter().find(|r| r.0 == "curve.sil").unwrap();
+    assert!(curve.1.contains(&"BOR-01".to_string()), "borrow bricking not caught: {:?}", curve.1);
+}
+
+/// A token program's borrowed receive, on every borrow scheme: the KCC-20
+/// reference survives BOR-03 to BOR-07; with its owner and KAS checks removed
+/// from the borrow path, BOR-03 and BOR-05 catch it.
+#[test]
+fn kcc20_borrow() {
+    let fixed = run_files("curve", &["KCC20.sil"]);
+    let token = &fixed[0];
+    assert!(token.1.is_empty(), "the reference should survive: {:?}", token.1);
+    assert!(token.3.is_empty(), "borrow paths unexplored: {:?}", token.3);
+    let vuln = run_files("kcc20_borrow", &["KCC20.sil"]);
+    for id in ["BOR-03", "BOR-05"] {
+        assert!(vuln[0].1.contains(&id.to_string()), "{id} not caught: {:?}", vuln[0].1);
+    }
 }

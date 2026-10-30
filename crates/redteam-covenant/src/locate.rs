@@ -35,6 +35,7 @@ pub fn locate(source: &str, path: &str, id: &str) -> Option<Location> {
             &["OpCovOutputCount("],
         ],
         "FAM-05" => &[&["OpCovOutputCount("], &["scriptPubKey"]],
+        "BOR-01" | "BOR-02" => &[&["borrow"], &["readInputStateWithTemplate("], &["OpInputCovenantId(", "=="]],
         "FAM-09" | "OUT-02" | "OUT-04" | "FEE-01" => &[&[".value >="], &[".value =="], &[".value <="], &["tx.outputs["]],
         "OUT-01" | "OUT-03" => &[&["scriptPubKey"], &["tx.outputs["]],
         x if x.starts_with("SIG") => &[&["checkSig"]],

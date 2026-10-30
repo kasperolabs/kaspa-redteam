@@ -690,7 +690,9 @@ kaspa-redteam vault.sil -v</pre>
     }
 
     h += `<h3 class="sec">Every attack</h3><div class="card tablecard"><table><thead><tr><th>ID</th><th>Result</th><th>Attack</th><th class="hide-narrow"></th></tr></thead><tbody>`;
-    res.forEach(x => {
+    // Found first, then survived, then skipped; by ID within each.
+    const rank = { found: 0, survived: 1, skipped: 2 };
+    res.slice().sort((a, b) => (rank[a.outcome.status] ?? 3) - (rank[b.outcome.status] ?? 3) || a.id.localeCompare(b.id, "en", { numeric: true })).forEach(x => {
       const o = x.outcome;
       const why = o.status === "skipped" ? o.reason : o.status === "survived" ? `${o.attempts} attempt${o.attempts === 1 ? "" : "s"} rejected` : `${o.findings.length} of ${o.attempts} attempts accepted`;
       h += `<tr><td class="id">${esc(x.id)}</td><td class="oc ${esc(o.status)}">${esc(o.status)}</td><td>${esc(x.title)}<div class="only-narrow">${esc(why)}</div></td><td class="why hide-narrow">${esc(why)}</td></tr>`;

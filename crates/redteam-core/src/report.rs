@@ -40,10 +40,22 @@ pub fn render_terminal(r: &RunReport, style: &TermStyle, verbose: bool) -> Strin
         r.subject_name,
         style.dim(&format!("(library v{}, {} target)", r.library_version, r.target.as_str()))
     );
-    let verdict = if findings.is_empty() {
-        style.green("0 FINDINGS")
+    let groups = group_findings(&findings).len();
+    let gaps = r
+        .context
+        .get("spend_map")
+        .and_then(|m| m.as_array())
+        .map(|m| m.iter().filter(|x| x.get("explored") != Some(&serde_json::Value::Bool(true))).count())
+        .unwrap_or(0);
+    // A run that attacked nothing is no pass, and one with unexplored paths says so.
+    let verdict = if !findings.is_empty() {
+        style.red(&format!("{groups} FINDING{}", if groups == 1 { "" } else { "S" }))
+    } else if r.count_run() == 0 {
+        style.yellow("NOTHING TESTED")
+    } else if gaps > 0 {
+        style.yellow(&format!("0 FINDINGS, {gaps} PATH{} UNEXPLORED", if gaps == 1 { "" } else { "S" }))
     } else {
-        style.red(&format!("{} FINDING{}", findings.len(), if findings.len() == 1 { "" } else { "S" }))
+        style.green("0 FINDINGS")
     };
     let _ = writeln!(
         o,
@@ -57,7 +69,15 @@ pub fn render_terminal(r: &RunReport, style: &TermStyle, verbose: bool) -> Strin
 
     if verbose {
         let _ = writeln!(o);
-        for a in &r.results {
+        // Found first, then survived, then skipped; by ID within each.
+        let rank = |o: &Outcome| match o {
+            Outcome::Found { .. } => 0,
+            Outcome::Survived { .. } => 1,
+            Outcome::Skipped { .. } => 2,
+        };
+        let mut rows: Vec<_> = r.results.iter().collect();
+        rows.sort_by(|x, y| rank(&x.outcome).cmp(&rank(&y.outcome)).then_with(|| id_key(&x.id).cmp(&id_key(&y.id))));
+        for a in rows {
             let (tag, detail) = match &a.outcome {
                 Outcome::Survived { attempts } => (
                     style.green("survived"),
@@ -188,4 +208,10 @@ pub fn group_findings<'a>(findings: &[&'a crate::Finding]) -> Vec<Vec<&'a crate:
         }
     }
     out
+}
+
+/// `FAM-10` sorts after `FAM-9`: the prefix, then the number.
+fn id_key(id: &str) -> (String, u32) {
+    let (p, n) = id.rsplit_once('-').unwrap_or((id, "0"));
+    (p.to_string(), n.parse().unwrap_or(0))
 }

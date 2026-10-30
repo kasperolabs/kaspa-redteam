@@ -1,5 +1,13 @@
 # Changelog
 
+## Tool 0.11.0 (library 0.9.0)
+
+- KCC-20 borrowed receive (section 5 of the spec). New attack pack `borrow`:
+  - A token program's borrow path is explored on every enabled scheme (`transfer[borrow:threshold]`, `[borrow:key]`, `[borrow:chain]`): the coin leads a transfer without its owner, a coin of the borrower follows and adds one token unit. BOR-03 to BOR-07 then try to take the coin, add nothing, take its KAS, borrow without the key or link, and rewrite the borrow settings. The KCC-20 reference survives all of them; `fixtures/family/kcc20_borrow` (owner and KAS checks removed from the borrow path) is caught by BOR-03 and BOR-05.
+  - A covenant that holds a token coin by covenant id is tried with that coin's borrowing turned on. If it accepts such a coin, a stranger borrows it (one token unit, no part of the covenant in the transaction) and the path is run again: if it no longer works, BOR-01 (high, anyone can brick it); if it still works, BOR-02 (low, anyone can move its outpoint). The curve, which requires `borrow_scheme == 0` on its coin, survives; without that line (`fixtures/family/curve_borrow`) BOR-01 catches it.
+- The attack list is sorted: found, then survived, then skipped (web and `-v`).
+- The terminal verdict says NOTHING TESTED when no attack ran, and `0 FINDINGS, N PATHS UNEXPLORED` when paths were left out, instead of a green 0 FINDINGS. The finding count counts problems (grouped), not attempts.
+
 ## Tool 0.10.1 (library 0.8.0)
 
 - Findings show where in the source the fix belongs: the line of the entry that does (or should do) the check the attack got past, with a line either side (`location` in the JSON report).

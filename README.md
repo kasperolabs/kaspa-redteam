@@ -129,6 +129,8 @@ A fourth shape is an order: a coin with no state of its own that names a token b
 
 On those spends the `family` attacks change what the new coins say and run the result past every program involved (the other programs' arguments rebuilt to match, so only the rules decide): mint more than the data says (FAM-01), to the attacker (FAM-02), twice (FAM-03), in the wrong covenant family (FAM-04), the authority not continuing (FAM-05), the same proof replayed on the next state (FAM-06). Two benchmarks by different authors keep this general: `fixtures/family/` has the real ETH bridge (survives all seven; a copy with its replay protection and run-once init check removed is caught by FAM-06 and FAM-07) and the SilverScript repository's own KCC-20 and minter (`upstream/`; every path explored, the family attacks rejected; a copy that lets a recipient become a minter is caught by FAM-08), and a bonding curve with the KCC-20 reference program (`curve/`; init, buy and sell explored and survive; a copy that forgets the price is caught by FAM-09). FAM-09 runs on paths nothing guards (no proof, no signature): the new coins go to the attacker and the coin under test gets no KAS for them. A program meant to give tokens away will show it; that is by design there.
 
+**Borrowed receive.** KCC-20 lets a sender add tokens to a coin the recipient already has, without the recipient's signature, when the coin's `borrow_scheme` allows it (any sender above a threshold, a named borrow key, or one hash-chain link at a time). A token program's borrow path is explored on each scheme and attacked (BOR-03 to BOR-07). A covenant that holds a token coin is tried with that coin borrowable: a stranger borrows it, and if the covenant then stops working (an exact amount check), that is BOR-01; if only the coin's outpoint moves, BOR-02.
+
 **Genesis.** A path that starts a new family (it reads `OpOutputCovenantId` of an output no input carries yet: a bridge's `init` creating its mint authority, a launch creating a token's first coins) is tried with a new coin of a project program whose covenant id is derived exactly as consensus derives it, from the authorizing input's outpoint and the new outputs. FAM-07 then tries to start the family a second time from the state the first run left.
 
 **What was minted, spent.** A coin a family spend created is then spent by its owner with its own program's entries (a minted KCC-20 cell moved with `transfer`, signed by the depositor the data named), and those spends are attacked in that program's report as `minted:...` paths. If no entry can move it, the report says the minted coins may be stuck.
@@ -227,6 +229,13 @@ The attacker holds only their own key, reads the chain and the mempool (so a sec
 | FAM-08 | family | Hand out the minting power | New coins allowed to carry the authority (a minter flag) |
 | FAM-09 | family | Take tokens without paying | A permissionless path hands out another program's coins and gets no KAS for them |
 | FAM-10 | family | Sweep coins sent to the covenant | A second coin owned by the covenant's id can be spent and taken in a normal spend |
+| BOR-01 | borrow | A stranger borrows the coin it holds and bricks it | A held token coin with borrowing on; one borrowed token unit breaks the covenant |
+| BOR-02 | borrow | A stranger borrows the coin it holds | A held token coin with borrowing on; anyone can move its outpoint |
+| BOR-03 | borrow | A borrow takes the coin | A token program's borrow path lets the coin change owner |
+| BOR-04 | borrow | A borrow adds nothing | A token program's borrow path does not require the amount to grow |
+| BOR-05 | borrow | A borrow takes the coin's KAS | A token program's borrow path lets the coin's KAS drop |
+| BOR-06 | borrow | A borrow without the borrow key | The borrow key or hash-chain link is not checked |
+| BOR-07 | borrow | A borrow rewrites the borrow settings | The borrow scheme or guard can change on a borrow |
 | FEE-01 | fees | Outputs halved, rest to fee | No bound on the fee |
 | IN-01 | inputs | Second covenant coin, shared outputs | Checks not tied to the active input |
 | IN-02 | inputs | Attacker coin at input 0 | Values read from `tx.inputs[0]` instead of `this.activeInputIndex` |

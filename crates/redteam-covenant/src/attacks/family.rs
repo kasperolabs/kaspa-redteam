@@ -31,7 +31,17 @@ impl CovenantAttack for Fam {
             })
             .collect();
         if out.is_empty() {
-            return Err("no explored spend creates coins of another program (give the project's files together)".into());
+            return Err(if self.0.pack == "borrow" {
+                if id >= "BOR-03" {
+                    "no token program with a borrowed receive among the explored paths".into()
+                } else if id == "BOR-02" {
+                    "no explored spend lets a stranger borrow a coin the covenant holds (see BOR-01)".into()
+                } else {
+                    "no coin the covenant holds was bricked by a borrow (where a borrow only moves it, see BOR-02)".into()
+                }
+            } else {
+                "no explored spend creates coins of another program (give the project's files together)".into()
+            });
         }
         Ok(out)
     }
@@ -103,3 +113,55 @@ fam!(FAM10, "FAM-10", "Sweep coins sent to the covenant",
     "require(OpCovInputCount(tokenCovId) == 1);  // or count and return every coin the covenant owns",
     "Someone sends tokens to an order's or a market's covenant id, or a second deposit lands there. The next spender includes that coin and takes its tokens, because the contract checks only the coin it is pointed at.",
     49);
+
+macro_rules! bor {
+    ($name:ident, $id:literal, $title:literal, $catches:literal, $fix:literal, $practice:literal, $sev:expr, $order:literal) => {
+        static $name: AttackMeta = AttackMeta {
+            id: $id,
+            pack: "borrow",
+            target: Target::Covenant,
+            title: $title,
+            catches: $catches,
+            severity: $sev,
+            fix_pattern: $fix,
+            in_practice: $practice,
+        };
+        inventory::submit! { CovenantPlugin(&Fam(&$name, $order)) }
+    };
+}
+
+bor!(BOR01, "BOR-01", "A stranger borrows the coin it holds and bricks it",
+    "a covenant that holds a token coin with borrowing on (KCC-20 borrowed receive) and expects an exact amount",
+    "require(tok.borrow_scheme == BORROW_DISABLED);  // on every token coin the covenant takes into custody, and on the ones it creates",
+    "KCC-20 lets anyone add tokens to a coin whose borrow scheme allows it, without the owner. The covenant is not in that transaction, so it cannot object, and afterwards its coin holds one unit more than its books say.",
+    Severity::High, 50);
+bor!(BOR02, "BOR-02", "A stranger borrows the coin it holds",
+    "a covenant that holds a token coin with borrowing on: its outpoint can be changed by anyone",
+    "require(tok.borrow_scheme == BORROW_DISABLED);  // or accept that anyone can move the coin's outpoint",
+    "Anyone adds a token unit to the covenant's coin through a borrowed receive. Nothing is lost, but the coin's outpoint keeps changing, so prepared transactions fail and the covenant's users must look it up again each time.",
+    Severity::Low, 51);
+bor!(BOR03, "BOR-03", "A borrow takes the coin",
+    "a token program whose borrowed receive lets the borrowed coin change owner",
+    "require(next_states[0].owner == owner && next_states[0].owner_scheme == owner_scheme);  // on the borrow path",
+    "Borrowing exists so senders can add to a coin the recipient already has. If the coin can come back with another owner, anyone allowed to borrow takes it.",
+    Severity::High, 52);
+bor!(BOR04, "BOR-04", "A borrow adds nothing",
+    "a token program whose borrowed receive does not require the amount to grow",
+    "require(next_states[0].amount - amount > amount_threshold);",
+    "A borrow is supposed to bring tokens. Without the increase rule, anyone allowed to borrow moves the coin as often as they like for nothing.",
+    Severity::Med, 53);
+bor!(BOR05, "BOR-05", "A borrow takes the coin's KAS",
+    "a token program whose borrowed receive lets the coin's KAS value drop",
+    "require(tx.outputs[OpAuthOutputIdx(this.activeInputIndex, 0)].value >= tx.inputs[this.activeInputIndex].value);",
+    "Every token coin carries KAS. A borrower who may lower it keeps the difference, coin after coin.",
+    Severity::High, 54);
+bor!(BOR06, "BOR-06", "A borrow without the borrow key",
+    "a token program that does not check the borrow key or the hash-chain link",
+    "require(checkSig(borrow_signature, pubkey(borrow_guard)));  // key scheme; hash-chain: the revealed link must hash to the guard",
+    "An owner who allows one borrower, or one borrow at a time, finds that anyone can borrow.",
+    Severity::Med, 55);
+bor!(BOR07, "BOR-07", "A borrow rewrites the borrow settings",
+    "a token program whose borrowed receive lets the borrow scheme or guard change",
+    "require(next_states[0].borrow_scheme == borrow_scheme && next_states[0].borrow_guard == next_borrow_guard);",
+    "The borrower decides who may borrow next, opens the coin to everyone, or shuts the owner's chosen borrower out.",
+    Severity::Med, 56);
