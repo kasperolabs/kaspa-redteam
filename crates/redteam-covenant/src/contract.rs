@@ -16,6 +16,9 @@ use std::collections::BTreeMap;
 pub struct StandIn {
     pub label: String,
     pub redeem: Vec<u8>,
+    /// The address of another contract in the same project (its real script).
+    /// Such a coin can be paid but not spent by the sandbox.
+    pub linked: Option<String>,
 }
 
 impl StandIn {
@@ -23,8 +26,15 @@ impl StandIn {
         // <label> OP_DROP OP_TRUE
         let mut redeem = crate::sandbox::push_data(format!("redteam-standin:{label}").as_bytes()).expect("small push");
         redeem.extend_from_slice(&[0x75, 0x51]);
-        Self { label: label.into(), redeem }
+        Self { label: label.into(), redeem, linked: None }
     }
+}
+
+/// Addresses of other contracts in the same project, by constructor parameter
+/// name: the program's name and its redeem script.
+#[derive(Debug, Clone, Default)]
+pub struct Links {
+    pub p2sh: BTreeMap<String, (String, Vec<u8>)>,
 }
 
 /// A secret the tool knows the preimage of. Constructor hash parameters are
@@ -99,6 +109,17 @@ pub struct Contract {
 impl Contract {
     /// `overrides`: `name=value` pairs from the command line.
     pub fn load(file_name: &str, source: &str, overrides: &BTreeMap<String, String>) -> Result<Self> {
+        Self::load_linked(file_name, source, overrides, &Links::default())
+    }
+
+    /// `load`, with constructor parameters that name another contract of the
+    /// project filled with that contract's real address.
+    pub fn load_linked(
+        file_name: &str,
+        source: &str,
+        overrides: &BTreeMap<String, String>,
+        links: &Links,
+    ) -> Result<Self> {
         let ast = silverscript_lang::ast::parse_contract_ast(source).map_err(|e| anyhow!("parse error: {e}"))?;
         let mut wallets = Wallets::new();
         let mut secrets = Vec::new();
@@ -114,9 +135,19 @@ impl Contract {
                     parse_override(raw, &ty, &mut wallets).with_context(|| format!("--arg {}", p.name))?,
                     "override".into(),
                 ),
-                None => default_value(source, &p.name, &ty, &mut wallets, &mut secrets, &mut stand_ins).with_context(
-                    || format!("constructor `{}` ({type_name}) needs a value: pass --arg {}=...", p.name, p.name),
-                )?,
+                None => match links.p2sh.get(&p.name) {
+                    Some((program, redeem)) if matches!(ty, TypeArtifact::FixedBytes { len: 32 }) => {
+                        stand_ins.push(StandIn {
+                            label: format!("{} ({program})", p.name),
+                            redeem: redeem.clone(),
+                            linked: Some(program.clone()),
+                        });
+                        (ArtifactValue::Bytes(blake2b(redeem)), format!("address of {program}"))
+                    }
+                    _ => default_value(source, &p.name, &ty, &mut wallets, &mut secrets, &mut stand_ins).with_context(
+                        || format!("constructor `{}` ({type_name}) needs a value: pass --arg {}=...", p.name, p.name),
+                    )?,
+                },
             };
             if let ArtifactValue::Int(n) = value {
                 ctor_ints.push(n);

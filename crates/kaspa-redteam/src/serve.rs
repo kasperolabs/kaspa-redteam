@@ -82,6 +82,7 @@ const EXAMPLES: &[Example] = &[
 ];
 const MAX_BODY: usize = 1 << 20; // 1 MiB: a contract plus a baseline file
 const MAX_SOURCE: usize = 256 * 1024;
+const MAX_FILES: usize = 8;
 const MAX_ARGS: usize = 32;
 
 pub struct ServeOptions {
@@ -291,7 +292,30 @@ fn scan(body: &[u8], s: &Shared) -> Result<Value> {
     let req: Value = serde_json::from_slice(body).context("the request is not JSON")?;
     let source = req.get("source").and_then(|v| v.as_str()).unwrap_or("");
     let baseline = req.get("baseline").and_then(|v| v.as_str()).unwrap_or("");
-    if source.trim().is_empty() && baseline.trim().is_empty() {
+    // A project: several files that work together, tested as one program.
+    let mut project: Vec<(String, String)> = Vec::new();
+    if let Some(list) = req.get("files").and_then(|v| v.as_array()) {
+        if list.len() > MAX_FILES {
+            anyhow::bail!("At most {MAX_FILES} files at once.");
+        }
+        for f in list {
+            let src = f.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            if src.trim().is_empty() {
+                continue;
+            }
+            if src.len() > MAX_SOURCE {
+                anyhow::bail!("A contract is over 256 KiB.");
+            }
+            let mut name = safe_name(f.get("filename").and_then(|v| v.as_str()).unwrap_or(""), ".sil", "contract.sil");
+            let mut k = 2;
+            while project.iter().any(|(n, _)| *n == name) {
+                name = format!("{}_{k}.sil", name.trim_end_matches(".sil"));
+                k += 1;
+            }
+            project.push((name, src.to_string()));
+        }
+    }
+    if source.trim().is_empty() && baseline.trim().is_empty() && project.is_empty() {
         anyhow::bail!("Give a .sil contract (or a baseline file).");
     }
     if source.len() > MAX_SOURCE {
@@ -322,7 +346,13 @@ fn scan(body: &[u8], s: &Shared) -> Result<Value> {
 
     let mut cmd = Command::new(&s.exe);
     let mut shown_name = String::from("baseline");
-    if !source.trim().is_empty() {
+    if !project.is_empty() {
+        for (name, src) in &project {
+            std::fs::write(dir.join(name), src)?;
+            cmd.arg(name);
+        }
+        shown_name = project.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ");
+    } else if !source.trim().is_empty() {
         let name = safe_name(req.get("filename").and_then(|v| v.as_str()).unwrap_or(""), ".sil", "contract.sil");
         std::fs::write(dir.join(&name), source)?;
         cmd.arg(&name);
@@ -331,7 +361,7 @@ fn scan(body: &[u8], s: &Shared) -> Result<Value> {
     for a in &args {
         cmd.arg("--arg").arg(a);
     }
-    if !baseline.trim().is_empty() {
+    if !baseline.trim().is_empty() && project.is_empty() {
         let name = safe_name(req.get("baseline_name").and_then(|v| v.as_str()).unwrap_or(""), ".json", "baseline.json");
         std::fs::write(dir.join(&name), baseline)?;
         cmd.arg("--baseline").arg(&name);
@@ -388,21 +418,39 @@ fn scan(body: &[u8], s: &Shared) -> Result<Value> {
     }
     let mut report: Value = serde_json::from_slice(&stdout).context("read the scanner's report")?;
     // Finding files, for download; paths inside them point at the temp folder, so show bare names.
-    let mut files = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(dir.join("findings")) {
-        let mut names: Vec<_> =
-            rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect();
-        names.sort();
-        for name in names {
-            let content = std::fs::read_to_string(dir.join("findings").join(&name)).unwrap_or_default();
-            files.push(json!({ "name": name, "content": scrub(&content, &dir) }));
-        }
-    }
+    // A project writes each contract's findings to findings/<stem>/, so names
+    // read `department_fund/OUT-01.json`.
+    let mut names = Vec::new();
+    collect(&dir.join("findings"), "", &mut names);
+    names.sort();
+    let files: Vec<Value> = names
+        .iter()
+        .map(|name| {
+            let content = std::fs::read_to_string(dir.join("findings").join(name)).unwrap_or_default();
+            json!({ "name": name, "content": scrub(&content, &dir) })
+        })
+        .collect();
     if let Value::Object(o) = &mut report {
-        o.insert("web_subject".into(), Value::String(shown_name));
+        if project.is_empty() {
+            o.insert("web_subject".into(), Value::String(shown_name));
+        }
     }
     let report: Value = serde_json::from_str(&scrub(&report.to_string(), &dir))?;
     Ok(json!({ "report": report, "files": files }))
+}
+
+/// Files under `dir`, as paths relative to it (one level of folders is enough).
+fn collect(dir: &Path, prefix: &str, out: &mut Vec<String>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.filter_map(|e| e.ok()) {
+        let name = e.file_name().to_string_lossy().to_string();
+        let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+        match e.file_type() {
+            Ok(t) if t.is_dir() && prefix.is_empty() => collect(&e.path(), &path, out),
+            Ok(t) if t.is_file() => out.push(path),
+            _ => {}
+        }
+    }
 }
 
 /// Replaces the temporary folder in paths with nothing, so reports read

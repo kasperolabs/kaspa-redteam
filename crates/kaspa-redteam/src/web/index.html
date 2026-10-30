@@ -217,9 +217,9 @@ footer { margin: 64px 0 40px; padding-top: 18px; border-top: 1px solid var(--lin
   <form class="card form" id="form" autocomplete="off">
     <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose a .sil file">
       <strong>Drop a <span class="mono" style="color:inherit;font-size:inherit">.sil</span> file here</strong>
-      <span>or click to choose one</span>
+      <span>or click to choose one. Several files that work together are tested as one project.</span>
     </div>
-    <input type="file" id="file" accept=".sil,text/plain" class="sr">
+    <input type="file" id="file" accept=".sil,text/plain" class="sr" multiple>
     <div style="margin-top:10px;display:flex;gap:18px;flex-wrap:wrap">
       <button type="button" class="linkbtn" id="pasteToggle">Paste the source instead</button>
     </div>
@@ -292,7 +292,7 @@ kaspa-redteam vault.sil -v</pre>
 (() => {
   const $ = id => document.getElementById(id);
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const state = { name: "", source: "", baselineName: "", baseline: "" };
+  const state = { name: "", source: "", baselineName: "", baseline: "", more: [] };
 
   // ---- input -------------------------------------------------------------
   const drop = $("drop"), file = $("file"), go = $("go"), paste = $("paste");
@@ -300,28 +300,34 @@ kaspa-redteam vault.sil -v</pre>
     const has = !!state.source.trim();
     if (has && $("pasteBox").hidden) {
       const lines = state.source.split("\n").length;
+      const all = [state.name || "contract.sil"].concat(state.more.map(f => f.name));
       drop.className = "drop has";
-      drop.innerHTML = `<div class="fileicon">SIL</div><div class="meta"><b>${esc(state.name || "contract.sil")}</b><small>${lines} lines · ${(state.source.length / 1024).toFixed(1)} KiB</small></div><button type="button" class="linkbtn" id="clear">Remove</button>`;
-      $("clear").onclick = e => { e.stopPropagation(); state.source = ""; state.name = ""; file.value = ""; refresh(); };
+      drop.innerHTML = state.more.length
+        ? `<div class="fileicon">${all.length}</div><div class="meta"><b>${esc(all.join(", "))}</b><small>a project of ${all.length} contracts, tested together</small></div><button type="button" class="linkbtn" id="clear">Remove</button>`
+        : `<div class="fileicon">SIL</div><div class="meta"><b>${esc(state.name || "contract.sil")}</b><small>${lines} lines · ${(state.source.length / 1024).toFixed(1)} KiB</small></div><button type="button" class="linkbtn" id="clear">Remove</button>`;
+      $("clear").onclick = e => { e.stopPropagation(); state.source = ""; state.name = ""; state.more = []; file.value = ""; refresh(); };
     } else if (!has) {
       drop.className = "drop";
       drop.innerHTML = `<strong>Drop a <span class="mono" style="color:inherit;font-size:inherit">.sil</span> file here</strong><span>or click to choose one</span>`;
     }
     go.disabled = !(state.source.trim() || state.baseline.trim());
   }
-  async function takeFile(f) {
-    if (!f) return;
-    if (f.size > 256 * 1024) return showError("That file is over 256 KiB.");
-    state.source = await f.text(); state.name = f.name; clearExample();
+  async function takeFiles(list) {
+    const fs = Array.from(list || []).filter(f => f && f.size > 0);
+    if (!fs.length) return;
+    if (fs.length > 8) return showError("At most 8 files at once.");
+    if (fs.some(f => f.size > 256 * 1024)) return showError("A file is over 256 KiB.");
+    const read = await Promise.all(fs.map(async f => ({ name: f.name, source: await f.text() })));
+    state.source = read[0].source; state.name = read[0].name; state.more = read.slice(1); clearExample();
     $("pasteBox").hidden = true; $("pasteToggle").textContent = "Paste the source instead";
     refresh();
   }
   drop.onclick = () => file.click();
   drop.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } };
-  file.onchange = () => takeFile(file.files[0]);
+  file.onchange = () => takeFiles(file.files);
   ["dragenter", "dragover"].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
   ["dragleave", "drop"].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); if (ev === "drop" || e.target === document.documentElement) drop.classList.remove("over"); }));
-  document.addEventListener("drop", e => { const f = e.dataTransfer && e.dataTransfer.files[0]; if (f) takeFile(f); });
+  document.addEventListener("drop", e => { if (e.dataTransfer && e.dataTransfer.files.length) takeFiles(e.dataTransfer.files); });
   $("pasteToggle").onclick = () => {
     const box = $("pasteBox"); box.hidden = !box.hidden;
     $("pasteToggle").textContent = box.hidden ? "Paste the source instead" : "Use a file instead";
@@ -329,7 +335,7 @@ kaspa-redteam vault.sil -v</pre>
     else { drop.style.display = ""; }
     refresh();
   };
-  paste.oninput = () => { state.source = paste.value; if (state.example) { clearExample(); state.name = "contract.sil"; } state.name = state.name || "contract.sil"; refresh(); };
+  paste.oninput = () => { state.source = paste.value; state.more = []; if (state.example) { clearExample(); state.name = "contract.sil"; } state.name = state.name || "contract.sil"; refresh(); };
   $("baseline").onchange = async e => {
     const f = e.target.files[0];
     if (!f) { state.baseline = ""; state.baselineName = ""; return refresh(); }
@@ -352,7 +358,7 @@ kaspa-redteam vault.sil -v</pre>
     const file = e && e[v];
     if (!file) return;
     state.example = e; state.exampleVariant = v;
-    state.source = file.source; state.name = file.filename;
+    state.source = file.source; state.name = file.filename; state.more = [];
     $("pasteBox").hidden = false; drop.style.display = "none";
     $("pasteToggle").textContent = "Use a file instead";
     paste.value = file.source; $("args").value = "";
@@ -407,11 +413,13 @@ kaspa-redteam vault.sil -v</pre>
     try {
       const r = await fetch("/api/scan", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: state.name, source: state.source, args, baseline: state.baseline, baseline_name: state.baselineName }),
+        body: JSON.stringify(state.more.length
+          ? { files: [{ filename: state.name, source: state.source }].concat(state.more.map(f => ({ filename: f.name, source: f.source }))), args }
+          : { filename: state.name, source: state.source, args, baseline: state.baseline, baseline_name: state.baselineName }),
       });
       let j; try { j = await r.json(); } catch (_) { j = { error: `The server answered ${r.status}.` }; }
       if (!r.ok || j.error) showError(j.error || `The server answered ${r.status}.`);
-      else { stopRunning(); render(j.report, j.files || []); }
+      else { stopRunning(); j.report && j.report.reports ? renderProject(j.report, j.files || []) : render(j.report, j.files || []); }
     } catch (err) { showError("Could not reach the server. " + err.message); }
     running = false; go.disabled = false;
   };
@@ -430,7 +438,9 @@ kaspa-redteam vault.sil -v</pre>
       ? `<div class="nudge">This was the broken version of <b>${esc(e.title)}</b>. <button class="linkbtn" id="other">Load the fixed one</button> to compare.</div>`
       : `<div class="nudge">This was the fixed version of <b>${esc(e.title)}</b>. <button class="linkbtn" id="other">Load the broken one</button> to see what it catches.</div>`;
   }
-  function render(rep, files) {
+  // One contract's report as HTML. `k` keeps element ids apart when a
+  // project shows several.
+  function reportHtml(rep, files, k, project) {
     const res = rep.results || [];
     const count = st => res.filter(x => x.outcome.status === st).length;
     const findings = res.flatMap(x => x.outcome.status === "found" ? x.outcome.findings : []);
@@ -442,10 +452,12 @@ kaspa-redteam vault.sil -v</pre>
     else if (run === 0) { cls = "partial"; title = "Nothing could be attacked"; sub = "No path was spent honestly, so no attack applied. See the notes."; }
     else if (unexplored) { cls = "partial"; title = "Survived, with gaps"; sub = `Every attack that ran was rejected, but ${unexplored} path${unexplored > 1 ? "s were" : " was"} not explored.`; }
     else { title = "Survived every attack"; sub = "Every hostile transaction was rejected on every path."; }
+    const name = rep.web_subject || rep.subject_name;
+    if (project) title = `${name}: ${title.charAt(0).toLowerCase() + title.slice(1)}`;
 
-    let h = `<div class="card verdict ${cls}">
+    let h = `<div class="card verdict ${cls}"${project ? ' style="margin-top:28px"' : ""}>
       <h2>${esc(title)}</h2>
-      <div class="sub">${esc(rep.web_subject || rep.subject_name)}${rep.context && rep.context.contract ? " · contract " + esc(rep.context.contract) : ""} · ${(rep.millis / 1000).toFixed(1)} s · library v${esc(rep.library_version)}</div>
+      <div class="sub">${esc(name)}${rep.context && rep.context.contract ? " · contract " + esc(rep.context.contract) : ""} · ${(rep.millis / 1000).toFixed(1)} s · library v${esc(rep.library_version)}</div>
       <p style="margin:12px 0 0">${esc(sub)}</p>
       <div class="stats">
         <div><b>${run}</b><span>attacks run</span></div>
@@ -453,21 +465,21 @@ kaspa-redteam vault.sil -v</pre>
         <div><b>${count("skipped")}</b><span>skipped</span></div>
         <div><b style="color:${findings.length ? "var(--red)" : "inherit"}">${findings.length}</b><span>findings</span></div>
       </div>
-      <div class="dl"><button class="linkbtn" id="dlReport">Download the full report (JSON)</button></div>
-      ${nudge()}
+      <div class="dl"><button class="linkbtn" data-report="${k}">Download this report (JSON)</button></div>
+      ${project ? "" : nudge()}
     </div>`;
 
     if (findings.length) {
       h += `<h3 class="sec">Findings</h3>`;
       findings.forEach(f => {
-        const want = String((f.repro && f.repro.file) || "").split("/").pop();
-        const i = files.findIndex(x => x.name === want);
+        const want = String((f.repro && f.repro.file) || "").replace(/^.*?findings\//, "");
+        const i = files.findIndex(x => x.name === want || x.name.split("/").pop() === want);
         const file = files[i];
         h += `<div class="card finding">
           <div class="fhead"><span class="sev ${esc(f.severity)}">${esc(f.severity)}</span><span class="fid">${esc(f.id)}</span><span class="ftitle">${esc(f.title)}</span><span class="fpath">path ${esc(f.subject)}</span></div>
           <p>${esc(f.explanation.charAt(0).toUpperCase() + f.explanation.slice(1))}</p>
           <div class="fix">${esc(f.fix_pattern)}</div>
-          ${file ? `<div class="dl"><button class="linkbtn" data-file="${i}">Download the repro (${esc(file.name)})</button><span class="hint" style="margin:0">replay: <code>kaspa-redteam replay ${esc(file.name)}</code></span></div>` : ""}
+          ${file ? `<div class="dl"><button class="linkbtn" data-file="${i}">Download the repro (${esc(file.name)})</button><span class="hint" style="margin:0">replay: <code>kaspa-redteam replay ${esc(file.name.split("/").pop())}</code></span></div>` : ""}
         </div>`;
       });
     }
@@ -489,14 +501,38 @@ kaspa-redteam vault.sil -v</pre>
     if ((rep.notes || []).length) {
       h += `<h3 class="sec">Notes</h3><div class="card"><ul class="notes">${rep.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul></div>`;
     }
-    $("result").innerHTML = h;
+    return h;
+  }
+  function bind(reports, files) {
     if ($("other")) $("other").onclick = () => {
       loadExample(state.example, state.exampleVariant === "broken" ? "fixed" : "broken");
       $("form").scrollIntoView({ behavior: "smooth", block: "start" });
     };
-    $("dlReport").onclick = () => download(`redteam-${(rep.web_subject || "report").replace(/\.sil$/, "")}.json`, JSON.stringify(rep, null, 2));
-    document.querySelectorAll("[data-file]").forEach(b => b.onclick = () => { const f = files[+b.dataset.file]; download(f.name, f.content); });
+    document.querySelectorAll("[data-report]").forEach(b => b.onclick = () => {
+      const rep = reports[+b.dataset.report];
+      download(`redteam-${(rep.web_subject || rep.subject_name || "report").replace(/\.sil$/, "")}.json`, JSON.stringify(rep, null, 2));
+    });
+    document.querySelectorAll("[data-file]").forEach(b => b.onclick = () => { const f = files[+b.dataset.file]; download(f.name.split("/").pop(), f.content); });
     $("result").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  function render(rep, files) {
+    $("result").innerHTML = reportHtml(rep, files, 0, false);
+    bind([rep], files);
+  }
+  // Several files: what links the tool found, then each contract's report.
+  function renderProject(proj, files) {
+    const reps = proj.reports || [];
+    const total = reps.reduce((n, r) => n + (r.results || []).reduce((m, x) => m + (x.outcome.status === "found" ? x.outcome.findings.length : 0), 0), 0);
+    const links = (proj.project && proj.project.links) || [];
+    let h = `<div class="card verdict ${total ? "bad" : ""}">
+      <h2>Project: ${reps.length} contracts, ${total} finding${total === 1 ? "" : "s"}</h2>
+      <div class="sub">${esc(((proj.project && proj.project.files) || []).join(" · "))}</div>
+      <p style="margin:12px 0 6px">How the contracts refer to each other, as the tool understood it:</p>
+      <ul class="notes" style="padding:0 0 0 20px">${links.length ? links.map(l => `<li><b>${esc(l.from)}</b> <code>${esc(l.via)}</code> ${l.kind === "address" ? "pays to the address of" : "pins the program of"} <b>${esc(l.to)}</b></li>`).join("") : "<li>no links found; each contract was attacked on its own</li>"}</ul>
+    </div>`;
+    reps.forEach((r, k) => { h += reportHtml(r, files, k, true); });
+    $("result").innerHTML = h;
+    bind(reps, files);
   }
 
   // ---- library -----------------------------------------------------------

@@ -11,6 +11,7 @@ pub mod attacks;
 pub mod baseline;
 pub mod contract;
 pub mod import;
+pub mod project;
 pub mod replay;
 pub mod runner;
 pub mod sandbox;

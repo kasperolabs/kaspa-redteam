@@ -46,6 +46,7 @@ kaspa-redteam vault.sil --deadline 60          # stop searching after 60 s, stil
 kaspa-redteam vault.sil --only sig,OUT-02      # packs or attack IDs
 kaspa-redteam vault.sil --json                 # for CI
 kaspa-redteam vault.sil --badge                # clean run: redteam-badge.svg + summary
+kaspa-redteam treasury.sil fund.sil -v         # several files that work together: one project
 kaspa-redteam --baseline honest.json           # attack transactions from your own harness
 kaspa-redteam export vault.sil > example.json  # the honest spends found, as a baseline file
 kaspa-redteam replay findings/*.json           # re-judge saved findings
@@ -59,6 +60,24 @@ Common flags: `--out DIR` (where finding files go, default `findings/`), `--no-c
 
 Exit codes: `0` clean, `1` findings, `2` error.
 
+### Projects: several contracts that work together
+
+Real systems are often more than one `.sil` file: a treasury and its department funds, a token and the market that sells it. Give all the files in one run and they are treated as one program:
+
+```
+kaspa-redteam town_treasury.sil department_fund.sil -v
+kaspa-redteam curve.sil kcc20.sil --arg SUPPLY=1000000    # --arg goes to whichever file has that parameter
+```
+
+The tool reads how the contracts refer to each other and wires them together instead of using stand-ins:
+
+- **address**: a `byte[32]` parameter used as a P2SH target whose name matches another file (`treasury` and `TownTreasury`) gets that contract's real script, so money paid to it goes to the actual program and is checked there.
+- **template**: a `byte[32]` constant or value equal to another file's template hash (a market pinning its token's program) is detected and reported.
+
+The report starts with the links it found, so you can check it understood the project, then each contract's results. Findings go to `out/<file stem>/`. `--json` gives `{ "project": { "files", "links", "millis" }, "reports": [ ... ] }`. `--baseline` is for single contracts only.
+
+Not yet covered: spends that need the linked contracts' own coins in the same transaction (a market buy that moves a token cell). Those paths show as unexplored; cover them with a baseline from your own harness for now. Building them from the source is the next step.
+
 ## Web page
 
 ```
@@ -66,9 +85,9 @@ kaspa-redteam serve                                # http://127.0.0.1:8790
 kaspa-redteam serve --port 8790 --jobs 2 --timeout 120 --threads 4
 ```
 
-A single page where anyone can drop a `.sil` file (or paste it), optionally add constructor values or a baseline file, and get the same report the command line gives: verdict, findings with fix patterns, the spend map, every attack's result, and the repro files to download. The page is built into the binary; there is nothing else to install.
+A single page where anyone can drop a `.sil` file (or several that work together, tested as one project), or paste one,, optionally add constructor values or a baseline file, and get the same report the command line gives: verdict, findings with fix patterns, the spend map, every attack's result, and the repro files to download. The page is built into the binary; there is nothing else to install.
 
-Every scan runs as a separate child process of the same binary, in a fresh temporary folder that is deleted when it ends. Limits: the search stops at two thirds of `--timeout` (`--deadline`) so the attacks still run and a report always comes back, and the scan is killed at `--timeout` seconds (default 120), 2 GiB of memory, `--threads` worker threads per scan, one running scan per visitor and `--jobs` scans at once (others are told to try again). Uploads are capped at 1 MiB. Nothing is logged or kept.
+Every scan runs as a separate child process of the same binary, in a fresh temporary folder that is deleted when it ends. Limits: the search stops at two thirds of `--timeout` (`--deadline`) so the attacks still run and a report always comes back, and the scan is killed at `--timeout` seconds (default 120), 2 GiB of memory, `--threads` worker threads per scan, one running scan per visitor and `--jobs` scans at once (others are told to try again). Uploads are capped at 1 MiB in total, 256 KiB and 8 files per scan. Nothing is logged or kept.
 
 It listens on `127.0.0.1` by default. For a public site, put a reverse proxy in front; the server reads the visitor's address from `X-Real-IP` or `X-Forwarded-For` when the request comes from the same machine. nginx:
 
@@ -93,6 +112,7 @@ Keep it running with pm2 (`pm2 start /path/to/kaspa-redteam --name redteam-web -
 | --- | --- |
 | `GET /` | the page |
 | `POST /api/scan` | `{ filename, source, args: ["name=value"], baseline, baseline_name }` → `{ report, files }` (`report` is the `--json` report) |
+| `POST /api/scan` (project) | `{ files: [{ filename, source }], args }` → `{ report: { project, reports }, files }`; finding files are named `<stem>/<ID>.json` |
 | `GET /api/library` | the attack library |
 | `GET /og.png` | the link-preview card (Open Graph / X) |
 | `GET /api/examples` | the examples the page offers, broken and fixed, with the bug and the fix in plain words |

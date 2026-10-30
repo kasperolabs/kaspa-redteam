@@ -247,7 +247,7 @@ fn search_layouts(
 
     // Input layouts: alone, or next to a stand-in coin the covenant names.
     let mut layouts: Vec<(Vec<InputSpec>, usize)> = if funding { vec![] } else { vec![(vec![], 0)] };
-    for k in 0..contract.stand_ins.len().min(2) {
+    for k in (0..contract.stand_ins.len()).filter(|k| contract.stand_ins[*k].linked.is_none()).take(2) {
         if funding {
             break;
         }

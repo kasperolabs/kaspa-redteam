@@ -132,7 +132,18 @@ fn explored_names(paths: &[PathStatus]) -> Vec<String> {
 /// Searches `file`, and if paths stay unexplored, tunes integer constructor
 /// values the user did not set. Returns the contract and paths to attack.
 pub fn tune(file_name: &str, source: &str, overrides: &BTreeMap<String, String>, judge: &Judge) -> Result<Tuned> {
-    let contract = Contract::load(file_name, source, overrides)?;
+    tune_linked(file_name, source, overrides, &crate::contract::Links::default(), judge)
+}
+
+/// `tune` for one contract of a project, with its links to the others.
+pub fn tune_linked(
+    file_name: &str,
+    source: &str,
+    overrides: &BTreeMap<String, String>,
+    links: &crate::contract::Links,
+    judge: &Judge,
+) -> Result<Tuned> {
+    let contract = Contract::load_linked(file_name, source, overrides, links)?;
     let paths = baseline::search_all(&contract, judge);
     let base_explored = explored_names(&paths);
     let unexplored: Vec<String> =
@@ -170,7 +181,7 @@ pub fn tune(file_name: &str, source: &str, overrides: &BTreeMap<String, String>,
             trial.insert(k.clone(), v.clone());
         }
         trial.insert(a.name.clone(), (!b).to_string());
-        let Ok(c2) = Contract::load(file_name, source, &trial) else { continue };
+        let Ok(c2) = Contract::load_linked(file_name, source, &trial, links) else { continue };
         if let Some(entry) = unexplored.iter().find(|e| {
             !chosen.values().any(|(_, opened)| opened == *e)
                 && states
@@ -205,7 +216,7 @@ pub fn tune(file_name: &str, source: &str, overrides: &BTreeMap<String, String>,
                     trial.insert(k.clone(), val.clone());
                 }
                 trial.insert(param.clone(), v.to_string());
-                let Ok(c2) = Contract::load(file_name, source, &trial) else { continue };
+                let Ok(c2) = Contract::load_linked(file_name, source, &trial, links) else { continue };
                 let opened = states.iter().any(|st| {
                     baseline::search_path_budget(&c2, judge, entry, st.as_ref(), TUNE_BUDGET).baseline.is_some()
                 });
@@ -225,7 +236,7 @@ pub fn tune(file_name: &str, source: &str, overrides: &BTreeMap<String, String>,
     for (k, (v, _)) in &chosen {
         trial.insert(k.clone(), v.clone());
     }
-    let mut tuned = Contract::load(file_name, source, &trial)?;
+    let mut tuned = Contract::load_linked(file_name, source, &trial, links)?;
     let tuned_paths = baseline::search_all(&tuned, judge);
     let tuned_explored = explored_names(&tuned_paths);
     if tuned_explored.len() < base_explored.len() || !base_explored.iter().all(|n| tuned_explored.contains(n)) {

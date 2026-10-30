@@ -34,8 +34,8 @@ struct Cli {
 
 #[derive(clap::Args, Default)]
 struct ScanArgs {
-    /// SilverScript contract to attack
-    file: Option<PathBuf>,
+    /// SilverScript contract(s) to attack. Several files are treated as one project.
+    files: Vec<PathBuf>,
     /// Constructor value: name=123 | name=0xhex | name=true | name=@party (test key)
     #[arg(long = "arg", value_name = "NAME=VALUE")]
     args: Vec<String>,
@@ -164,7 +164,7 @@ fn real_main() -> Result<ExitCode> {
             finish(report, &common)
         }
         None => {
-            if cli.scan.file.is_none() && cli.scan.baselines.is_empty() {
+            if cli.scan.files.is_empty() && cli.scan.baselines.is_empty() {
                 bail!("give a .sil file to attack, a --baseline file, or a subcommand (try --help)");
             }
             scan(&cli.scan)
@@ -178,6 +178,9 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
         let (k, v) = kv.split_once('=').with_context(|| format!("--arg {kv}: expected NAME=VALUE"))?;
         overrides.insert(k.trim().to_string(), v.trim().to_string());
     }
+    if a.files.len() > 1 {
+        return project(a, &overrides);
+    }
     let short =
         |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.display().to_string());
     let started = std::time::Instant::now();
@@ -185,7 +188,7 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
         redteam_covenant::baseline::set_deadline(started + std::time::Duration::from_secs(s));
     }
     let judge = redteam_covenant::sandbox::Judge::new();
-    let (contract, paths, notes) = match &a.file {
+    let (contract, paths, notes) = match a.files.first() {
         Some(file) => {
             let source = std::fs::read_to_string(file).with_context(|| format!("read {}", file.display()))?;
             if a.no_tune {
@@ -215,6 +218,70 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
     }
     let report = redteam_covenant::run_paths_timed(&contract, &a.common.only, paths, imported, notes, started);
     finish(report, &a.common)
+}
+
+/// Several files: one project, each contract searched and attacked with its
+/// links to the others, one combined report.
+fn project(a: &ScanArgs, overrides: &BTreeMap<String, String>) -> Result<ExitCode> {
+    if !a.baselines.is_empty() {
+        bail!("--baseline works with one .sil file at a time for now");
+    }
+    let started = std::time::Instant::now();
+    if let Some(s) = a.deadline {
+        redteam_covenant::baseline::set_deadline(started + std::time::Duration::from_secs(s));
+    }
+    let mut files = Vec::new();
+    for f in &a.files {
+        let source = std::fs::read_to_string(f).with_context(|| format!("read {}", f.display()))?;
+        let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.display().to_string());
+        files.push(redteam_covenant::project::ProjectFile { name, source });
+    }
+    let judge = redteam_covenant::sandbox::Judge::new();
+    let (links, mut reports) = redteam_covenant::project::run(&files, overrides, &a.common.only, &judge)?;
+    let c = &a.common;
+    let mut any = false;
+    for (f, r) in files.iter().zip(reports.iter_mut()) {
+        if !r.is_clean() {
+            any = true;
+            let stem = f.name.rsplit_once('.').map(|(s, _)| s).unwrap_or(&f.name);
+            let dir = c.out.join(stem);
+            write_findings(r, &dir).with_context(|| format!("write findings to {}", dir.display()))?;
+        }
+    }
+    if c.json {
+        let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "project": { "files": names, "links": links, "millis": started.elapsed().as_millis() },
+                "reports": reports,
+            }))?
+        );
+    } else {
+        let style = TermStyle {
+            color: !c.no_color && std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none(),
+        };
+        let findings: usize = reports.iter().map(|r| r.findings().count()).sum();
+        println!(
+            "project: {} contracts, {} link(s), {} finding(s), {:.1}s",
+            files.len(),
+            links.len(),
+            findings,
+            started.elapsed().as_secs_f64()
+        );
+        for l in &links {
+            let what = if l.kind == "address" { "pays to the address of" } else { "pins the program of" };
+            println!("  {} `{}` {} {}", l.from, l.via, what, l.to);
+        }
+        if links.is_empty() {
+            println!("  no links found between the files (each was attacked on its own)");
+        }
+        for r in &reports {
+            println!();
+            print!("{}", render_terminal(r, &style, c.verbose));
+        }
+    }
+    Ok(if any { ExitCode::from(1) } else { ExitCode::SUCCESS })
 }
 
 fn finish(mut report: RunReport, c: &Common) -> Result<ExitCode> {

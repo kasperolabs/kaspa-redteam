@@ -1,5 +1,10 @@
 # Changelog
 
+## Tool 0.4.0 (library 0.3.0)
+
+- Projects: give several `.sil` files in one run (`kaspa-redteam treasury.sil fund.sil`) and they are tested as one program. A P2SH parameter named after another file gets that contract's real script instead of a stand-in; a pinned `byte[32]` equal to another file's template hash is detected. The report lists the links, then each contract's results; findings go to `out/<stem>/`; `--arg` goes to whichever file has the parameter.
+- Web page: drop or choose several files at once (up to 8) for a project report: the links the tool found, then each contract's verdict, findings and repro downloads.
+
 ## Tool 0.3.7 (library 0.3.0)
 
 - Search: signers are ranked by the checks in the entry's own body (`deptSig` against `parks` in `pullParks`), so contracts with many similar paths stop burning their budget on the wrong key. A 12-path municipal budget went from 252 s with 5 paths unexplored to 0.1 s with all explored.
