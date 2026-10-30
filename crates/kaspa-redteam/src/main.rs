@@ -90,6 +90,10 @@ enum Cmd {
         #[arg(long = "arg", value_name = "NAME=VALUE")]
         args: Vec<String>,
     },
+    /// The constructor parameters of each file, with the values the tool would use (JSON)
+    Params {
+        files: Vec<PathBuf>,
+    },
     /// List the attack library
     List {
         #[arg(long)]
@@ -143,6 +147,7 @@ fn real_main() -> Result<ExitCode> {
     match cli.cmd {
         Some(Cmd::Replay { files }) => replay(&files),
         Some(Cmd::List { json }) => list(json),
+        Some(Cmd::Params { files }) => params(&files),
         Some(Cmd::Serve { bind, port, jobs, timeout, threads }) => {
             serve::serve(serve::ServeOptions { bind, port, jobs: jobs.max(1), timeout, threads: threads.max(1) })?;
             Ok(ExitCode::SUCCESS)
@@ -384,6 +389,45 @@ fn replay(files: &[PathBuf]) -> Result<ExitCode> {
         }
     }
     Ok(if reproduced > 0 { ExitCode::from(1) } else { ExitCode::SUCCESS })
+}
+
+/// Constructor parameters as the web form shows them: name, type, the value
+/// the tool would use (in `--arg` syntax), where it came from, and whether
+/// the tool must play it (a key or a secret it cannot take from you).
+fn params(files: &[PathBuf]) -> Result<ExitCode> {
+    use silverscript_abi::ArtifactValue;
+    let mut out = Vec::new();
+    for f in files {
+        let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let raw = std::fs::read_to_string(f).with_context(|| format!("read {}", f.display()))?;
+        let (source, _) = redteam_covenant::legacy::prepare(&name, &raw)?;
+        let c = redteam_covenant::contract::Contract::load(&name, &source, &BTreeMap::new())?;
+        let rows: Vec<serde_json::Value> = c
+            .args
+            .iter()
+            .map(|a| {
+                let value = match &a.value {
+                    ArtifactValue::Int(n) => n.to_string(),
+                    ArtifactValue::Bool(b) => b.to_string(),
+                    ArtifactValue::Byte(b) => b.to_string(),
+                    ArtifactValue::Bytes(b) => format!("0x{}", faster_hex::hex_string(b)),
+                    ArtifactValue::Text(t) => t.clone(),
+                    other => format!("{other:?}"),
+                };
+                let played = if a.ty == "pubkey" {
+                    Some("key")
+                } else if a.ty == "byte[32]" {
+                    redteam_covenant::contract::played_by_tool(&source, &a.name)
+                } else {
+                    None
+                };
+                serde_json::json!({ "name": a.name, "type": a.ty, "value": value, "origin": a.origin, "played": played })
+            })
+            .collect();
+        out.push(serde_json::json!({ "file": name, "params": rows }));
+    }
+    println!("{}", serde_json::to_string(&out)?);
+    Ok(ExitCode::SUCCESS)
 }
 
 fn list(json: bool) -> Result<ExitCode> {

@@ -394,7 +394,19 @@ pub fn played_by_tool(source: &str, name: &str) -> Option<&'static str> {
     match hash_use(source, name) {
         HashUse::Key => Some("key"),
         HashUse::PubkeyBlake2b => Some("key hash"),
-        HashUse::SecretSha256 | HashUse::SecretBlake2b => Some("hash lock"),
+        // Only a value the script actually hashes against is a lock; any other
+        // byte[32] (an id, a template, a commitment) is the user's to give.
+        HashUse::SecretSha256 | HashUse::SecretBlake2b => {
+            let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+            let hashed = source.lines().any(|l| {
+                (l.contains("sha256(") || l.contains("blake2b("))
+                    && l.match_indices(name).any(|(i, _)| {
+                        l[..i].chars().next_back().is_none_or(|c| !is_ident(c))
+                            && l[i + name.len()..].chars().next().is_none_or(|c| !is_ident(c))
+                    })
+            });
+            hashed.then_some("hash lock")
+        }
         HashUse::P2shTarget => None,
     }
 }

@@ -1,5 +1,11 @@
 # Changelog
 
+## Tool 0.4.5 (library 0.3.1)
+
+- Web page: "Constructor values" is a form built from the contract, folded under the file with a summary ("11 · 2 yours, 9 test values"). Every parameter is filled in for testing; a value you change becomes yours, and amounts show in KAS. Keys and hash locks are listed as played by the tool. A report with unexplored paths links back to the form. The old text box is under "Paste values instead".
+- `kaspa-redteam params FILE...` and `POST /api/params`: each contract's constructor parameters, with the value the tool would use and whether it plays them.
+- A `byte[32]` counts as a hash lock (played by the tool, value from a file ignored) only when the script hashes against it; ids, templates and commitments are always taken as given.
+
 ## Tool 0.4.4 (library 0.3.1)
 
 - `--compiled FILE`: test the exact script a project's own (pinned) compiler made, with the `.sil` for entries and hints and `--args` for the values it was compiled with. Keys, key hashes and hash locks are swapped in place for the tool's own (same-length pushes); everything else is the given bytes. The report gives the script's sha256 and whether today's compile matches. A script that does not contain the given values, lacks an entry's dispatch tag, or hides its starting state is refused. The web page has a "Compiled script (advanced)" upload.

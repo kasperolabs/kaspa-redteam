@@ -98,6 +98,26 @@ details.adv summary { cursor: pointer; font-size: 13px; font-weight: 600; list-s
 details.adv summary::-webkit-details-marker { display: none; }
 details.adv summary::before { content: "+ "; font-family: var(--mono); color: var(--muted); }
 details.adv[open] summary::before { content: "− "; }
+details.ctor { border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg); }
+details.ctor > summary { list-style: none; cursor: pointer; padding: 11px 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 14px; }
+details.ctor > summary::-webkit-details-marker { display: none; }
+details.ctor > summary b { font-weight: 600; }
+details.ctor > summary .sum { color: var(--muted); font-size: 13px; }
+details.ctor > summary .pill { margin-left: auto; border: 1px solid var(--ink); border-radius: 999px; padding: 2px 11px; font-size: 12px; font-weight: 600; }
+details.ctor[open] > summary .pill::before { content: "close"; }
+details.ctor:not([open]) > summary .pill::before { content: "edit"; }
+details.ctor .body { padding: 2px 14px 14px; border-top: 1px solid var(--line); }
+details.ctor.flash { outline: 2px solid var(--red); outline-offset: 2px; }
+.prow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 4px 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.prow:last-child { border-bottom: 0; }
+.prow .pn { font: 13px var(--mono); overflow-wrap: anywhere; }
+.prow .pn small { display: block; color: var(--muted); font: 12px var(--sans); }
+.prow input[type=text] { padding: 6px 9px; }
+.prow .played { color: var(--muted); font-size: 13px; }
+.prow .tag { font-size: 11px; color: var(--muted); }
+.prow .tag.mine { color: var(--ink); font-weight: 600; }
+.pfile { font: 600 12px var(--mono); color: var(--muted); margin: 12px 0 2px; }
+@media (max-width: 560px) { .prow { grid-template-columns: 1fr; } }
 .filepick { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 13px; }
 .filepick input { font-size: 13px; max-width: 100%; color: var(--muted); }
 
@@ -237,18 +257,29 @@ footer { margin: 64px 0 40px; padding-top: 18px; border-top: 1px solid var(--lin
       <textarea id="paste" rows="10" spellcheck="false" placeholder="pragma silverscript ^0.1.0;&#10;&#10;contract Vault(pubkey owner) { ... }"></textarea>
     </div>
 
-    <div class="row">
-      <div>
-        <label class="f" for="args">Constructor values <span>(optional)</span></label>
-        <textarea id="args" rows="3" spellcheck="false" placeholder="owner=@alice&#10;cap=500000000"></textarea>
-        <div class="hint">One <code>NAME=VALUE</code> per line: numbers, <code>0xhex</code>, <code>true</code>/<code>false</code>, or <code>@name</code> for a test key. Or paste the JSON you deploy with (<code>{"cap": 500000000, ...}</code>). Leave empty and the tool picks.</div>
+    <div style="margin-top:16px">
+    <details class="ctor" id="ctor">
+      <summary><b>Constructor values</b><span class="sum" id="ctorSum">the tool fills them in for testing</span><span class="pill"></span></summary>
+      <div class="body">
+        <div class="hint" style="margin-top:10px">Every value is filled in for testing. Change only the ones you know (amounts, limits, fee scripts, token hashes); the rest stay as they are. Keys and secrets are always played by the tool, which cannot sign with a real key or know a real secret.</div>
+        <div id="ctorRows"><div class="hint">Add a contract to see its values.</div></div>
+        <div class="hint" style="margin-top:10px"><button type="button" class="linkbtn" id="pasteArgsToggle">Paste values instead</button> (<code>NAME=VALUE</code> lines, or the JSON you deploy with)</div>
+        <div id="pasteArgs" hidden style="margin-top:8px">
+          <textarea id="args" rows="3" spellcheck="false" placeholder="cap=500000000&#10;or { &quot;cap&quot;: 500000000, ... }"></textarea>
+        </div>
       </div>
+    </details>
+    </div>
+
+    <div class="row">
       <div>
         <details class="adv">
           <summary>Baseline file (advanced)</summary>
           <div class="hint">Honest transactions from your own test harness, for contracts the search cannot spend on its own (token families, sibling programs). Format: <a href="https://github.com/kasperolabs/kaspa-redteam/blob/main/BASELINE.md" rel="noopener">BASELINE.md</a>. Only use throwaway keys.</div>
           <div class="filepick"><input type="file" id="baseline" accept=".json,application/json"></div>
         </details>
+      </div>
+      <div>
         <details class="adv">
           <summary>Compiled script (advanced)</summary>
           <div class="hint">Test the exact bytes your own pinned compiler made, not today's compile: its JSON output (with a <code>bytecode</code> hex) or a hex file. Keep the <code>.sil</code> above, and paste the constructor values it was compiled with; keys and hash locks are swapped for test ones, nothing else is touched.</div>
@@ -297,7 +328,98 @@ kaspa-redteam vault.sil -v</pre>
 (() => {
   const $ = id => document.getElementById(id);
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const state = { name: "", source: "", baselineName: "", baseline: "", more: [], compiled: "", compiledName: "" };
+  const state = { name: "", source: "", baselineName: "", baseline: "", more: [], compiled: "", compiledName: "", params: [], paramsKey: "" };
+
+  // ---- constructor values --------------------------------------------------
+  // Rows come from the contract itself (names, types, the tool's value). A row
+  // the user edits becomes theirs; the rest stay test values.
+  const PLAYED = { "key": "test key, played by the tool", "key hash": "hash of a test key, played by the tool", "hash lock": "hash of a test secret, played by the tool" };
+  let paramsTimer = 0;
+  function allFiles() {
+    return state.source.trim() ? [{ filename: state.name || "contract.sil", source: state.source }].concat(state.more.map(f => ({ filename: f.name, source: f.source }))) : [];
+  }
+  function scheduleParams() {
+    clearTimeout(paramsTimer);
+    paramsTimer = setTimeout(loadParams, 500);
+  }
+  async function loadParams() {
+    const files = allFiles();
+    const key = files.map(f => f.filename + ":" + f.source.length + ":" + f.source.slice(0, 200)).join("|");
+    if (key === state.paramsKey) return;
+    state.paramsKey = key;
+    if (!files.length) { state.params = []; return renderParams(); }
+    try {
+      const r = await fetch("/api/params", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ files }) });
+      const j = await r.json();
+      if (key !== state.paramsKey) return;
+      if (!r.ok || j.error) { state.params = []; state.paramsError = true; return renderParams(); }
+      const old = new Map(state.params.map(p => [p.file + "/" + p.name, p.mine]));
+      state.paramsError = false;
+      state.params = j.contracts.flatMap(c => c.params.map(p => Object.assign({ file: c.file }, p, { mine: old.get(c.file + "/" + p.name) || "" })));
+    } catch (_) { state.params = []; }
+    renderParams();
+  }
+  function ctorSummary() {
+    const ps = state.params, editable = ps.filter(p => !p.played), mine = editable.filter(p => p.mine.trim());
+    if (!ps.length) return state.paramsError ? "read when the contract compiles" : "the tool fills them in for testing";
+    if (!editable.length) return `${ps.length}, all keys or secrets the tool plays`;
+    if (!mine.length) return `${ps.length} · test values for all`;
+    return `${ps.length} · ${mine.length} yours, ${ps.length - mine.length} test values`;
+  }
+  // Amounts read better in KAS: shown next to sompi values that look like money.
+  function kasHint(p, v) {
+    if (p.type !== "int" || !/^\d+$/.test(v) || +v < 100000) return "";
+    if (/time|block|daa|period|delay|age|deadline|lock|after|until|count|bps|n$/i.test(p.name)) return "";
+    return ` · ${(+v / 1e8).toLocaleString(undefined, { maximumFractionDigits: 8 })} KAS`;
+  }
+  function tagHtml(i) {
+    const p = state.params[i], v = p.mine || p.value;
+    return (p.mine ? `yours${kasHint(p, v)} · <button type="button" class="linkbtn" data-reset="${i}" style="font-size:11px">use the test value</button>` : `test value${kasHint(p, v)}`);
+  }
+  function renderParams() {
+    $("ctorSum").textContent = ctorSummary();
+    const box = $("ctorRows");
+    if (!state.params.length) { box.innerHTML = `<div class="hint">${state.paramsError ? "The contract does not compile yet; its values show up once it does (the scan explains the error)." : "Add a contract to see its values."}</div>`; return; }
+    const files = [...new Set(state.params.map(p => p.file))];
+    let h = "";
+    files.forEach(file => {
+      if (files.length > 1) h += `<div class="pfile">${esc(file)}</div>`;
+      state.params.forEach((p, i) => {
+        if (p.file !== file || p.played) return;
+        h += `<div class="prow"><div class="pn">${esc(p.name)}<small>${esc(p.type)}</small></div><div><input type="text" data-p="${i}" value="${esc(p.mine || p.value)}" spellcheck="false" aria-label="${esc(p.name)}"><div class="tag${p.mine ? " mine" : ""}" id="ptag${i}">${tagHtml(i)}</div></div></div>`;
+      });
+      const played = state.params.filter(p => p.file === file && p.played);
+      if (played.length) {
+        const keys = played.filter(p => p.played !== "hash lock").map(p => p.name), locks = played.filter(p => p.played === "hash lock").map(p => p.name);
+        const parts = [];
+        if (keys.length) parts.push(`${keys.map(esc).map(n => `<code>${n}</code>`).join(", ")} (test ${keys.length > 1 ? "keys" : "key"})`);
+        if (locks.length) parts.push(`${locks.map(esc).map(n => `<code>${n}</code>`).join(", ")} (hash of a test secret)`);
+        h += `<div class="hint" style="padding:8px 0">Played by the tool: ${parts.join("; ")}.</div>`;
+      }
+    });
+    box.innerHTML = h;
+    box.querySelectorAll("input[data-p]").forEach(inp => inp.oninput = () => {
+      const i = +inp.dataset.p, p = state.params[i], v = inp.value.trim();
+      p.mine = v && v !== p.value ? v : "";
+      const tag = $("ptag" + i);
+      tag.className = "tag" + (p.mine ? " mine" : "");
+      tag.innerHTML = tagHtml(i);
+      bindResets();
+      $("ctorSum").textContent = ctorSummary();
+    });
+    bindResets();
+  }
+  function bindResets() {
+    $("ctorRows").querySelectorAll("[data-reset]").forEach(b => b.onclick = () => { state.params[+b.dataset.reset].mine = ""; renderParams(); });
+  }
+  $("pasteArgsToggle").onclick = () => { const b = $("pasteArgs"); b.hidden = !b.hidden; if (!b.hidden) $("args").focus(); };
+  function openCtor() {
+    const d = $("ctor");
+    d.open = true;
+    d.scrollIntoView({ behavior: "smooth", block: "center" });
+    d.classList.add("flash");
+    setTimeout(() => d.classList.remove("flash"), 1600);
+  }
 
   // ---- input -------------------------------------------------------------
   const drop = $("drop"), file = $("file"), go = $("go"), paste = $("paste");
@@ -316,6 +438,7 @@ kaspa-redteam vault.sil -v</pre>
       drop.innerHTML = `<strong>Drop a <span class="mono" style="color:inherit;font-size:inherit">.sil</span> file here</strong><span>or click to choose one</span>`;
     }
     go.disabled = !(state.source.trim() || state.baseline.trim());
+    scheduleParams();
   }
   async function takeFiles(list) {
     const fs = Array.from(list || []).filter(f => f && f.size > 0);
@@ -423,7 +546,8 @@ kaspa-redteam vault.sil -v</pre>
     $("status").scrollIntoView({ behavior: "smooth", block: "center" });
     const rawArgs = $("args").value.trim();
     const argsJson = /^[\[{]/.test(rawArgs) ? rawArgs : "";
-    const args = argsJson ? [] : rawArgs.split("\n").map(s => s.trim()).filter(Boolean);
+    const args = state.params.filter(p => !p.played && p.mine.trim()).map(p => `${p.name}=${p.mine.trim()}`)
+      .concat(argsJson ? [] : rawArgs.split("\n").map(s => s.trim()).filter(Boolean));
     try {
       const r = await fetch("/api/scan", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -480,6 +604,7 @@ kaspa-redteam vault.sil -v</pre>
         <div><b style="color:${findings.length ? "var(--red)" : "inherit"}">${findings.length}</b><span>findings</span></div>
       </div>
       <div class="dl"><button class="linkbtn" data-report="${k}">Download this report (JSON)</button></div>
+      ${unexplored ? `<div class="nudge">Unexplored paths often need real values: an amount, a limit, a fee script, a token hash. <button class="linkbtn" data-ctor="1">Set constructor values</button> and run again.</div>` : ""}
       ${project ? "" : nudge()}
     </div>`;
 
@@ -526,6 +651,7 @@ kaspa-redteam vault.sil -v</pre>
       const rep = reports[+b.dataset.report];
       download(`redteam-${(rep.web_subject || rep.subject_name || "report").replace(/\.sil$/, "")}.json`, JSON.stringify(rep, null, 2));
     });
+    document.querySelectorAll("[data-ctor]").forEach(b => b.onclick = openCtor);
     document.querySelectorAll("[data-file]").forEach(b => b.onclick = () => { const f = files[+b.dataset.file]; download(f.name.split("/").pop(), f.content); });
     $("result").scrollIntoView({ behavior: "smooth", block: "start" });
   }

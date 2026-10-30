@@ -229,6 +229,17 @@ fn handle(mut req: tiny_http::Request, s: &Shared) {
             )
         }
         (&tiny_http::Method::Get, "/health") => respond(req, 200, "text/plain", "ok"),
+        (&tiny_http::Method::Post, "/api/params") => {
+            let mut body = Vec::new();
+            let read = req.as_reader().take(MAX_BODY as u64 + 1).read_to_end(&mut body);
+            if read.is_err() || body.len() > MAX_BODY {
+                return respond_json(req, 413, &json!({ "error": "That upload is over 1 MiB." }));
+            }
+            match params_of(&body, s) {
+                Ok(v) => respond_json(req, 200, &v),
+                Err(e) => respond_json(req, 400, &json!({ "error": format!("{e:#}") })),
+            }
+        }
         (&tiny_http::Method::Post, "/api/scan") => {
             let ip = client_ip(&req);
             let mut body = Vec::new();
@@ -458,6 +469,64 @@ fn scan(body: &[u8], s: &Shared) -> Result<Value> {
     }
     let report: Value = serde_json::from_str(&scrub(&report.to_string(), &dir))?;
     Ok(json!({ "report": report, "files": files }))
+}
+
+/// The constructor parameters of the uploaded file(s), for the form: compiled
+/// in a child process like a scan, with a short limit.
+fn params_of(body: &[u8], s: &Shared) -> Result<Value> {
+    let req: Value = serde_json::from_slice(body).context("the request is not JSON")?;
+    let mut files: Vec<(String, String)> = Vec::new();
+    let list = req.get("files").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    for f in list.iter().take(MAX_FILES) {
+        let src = f.get("source").and_then(|v| v.as_str()).unwrap_or("");
+        if src.trim().is_empty() || src.len() > MAX_SOURCE {
+            continue;
+        }
+        let mut name = safe_name(f.get("filename").and_then(|v| v.as_str()).unwrap_or(""), ".sil", "contract.sil");
+        let mut k = 2;
+        while files.iter().any(|(n, _)| *n == name) {
+            name = format!("{}_{k}.sil", name.trim_end_matches(".sil"));
+            k += 1;
+        }
+        files.push((name, src.to_string()));
+    }
+    if files.is_empty() {
+        anyhow::bail!("No contract to read.");
+    }
+    let n = s.counter.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("kaspa-redteam-params-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let _cleanup = Cleanup(dir.clone());
+    let mut cmd = Command::new(&s.exe);
+    cmd.arg("params");
+    for (name, src) in &files {
+        std::fs::write(dir.join(name), src)?;
+        cmd.arg(name);
+    }
+    cmd.current_dir(&dir).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    limit_memory(&mut cmd);
+    let mut child = cmd.spawn().context("start the reader")?;
+    let started = Instant::now();
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if started.elapsed() > Duration::from_secs(15) {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("Reading the constructor took too long.");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    child.stdout.take().expect("piped").read_to_end(&mut out)?;
+    child.stderr.take().expect("piped").take(64 * 1024).read_to_end(&mut err)?;
+    if !status.success() {
+        let e = String::from_utf8_lossy(&err).trim().to_string();
+        anyhow::bail!("{}", e.trim_start_matches("error: "));
+    }
+    Ok(json!({ "contracts": serde_json::from_slice::<Value>(&out).context("read the parameters")? }))
 }
 
 /// Files under `dir`, as paths relative to it (one level of folders is enough).

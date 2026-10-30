@@ -2747,15 +2747,17 @@ dependencies = [
 
 [[package]]
 name = "kaspa-redteam"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "clap",
+ "faster-hex 0.10.1",
  "libc",
  "redteam-core",
  "redteam-covenant",
  "redteam-node",
  "serde_json",
+ "silverscript-abi",
  "tiny_http",
 ]
 
@@ -3992,7 +3994,7 @@ dependencies = [
 
 [[package]]
 name = "redteam-core"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "faster-hex 0.10.1",
  "serde",
@@ -4002,7 +4004,7 @@ dependencies = [
 
 [[package]]
 name = "redteam-covenant"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "blake2b_simd",
@@ -4027,7 +4029,7 @@ dependencies = [
 
 [[package]]
 name = "redteam-node"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "inventory",

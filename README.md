@@ -64,7 +64,7 @@ Exit codes: `0` clean, `1` findings, `2` error.
 
 ### Constructor values from your deploy file
 
-`--args FILE` reads the same values you deploy with, so the contract is tested with your numbers, hashes and templates instead of the tool's defaults. `--arg` still wins over the file. On the web page, paste the JSON into the constructor values box.
+`--args FILE` reads the same values you deploy with, so the contract is tested with your numbers, hashes and templates instead of the tool's defaults. `--arg` still wins over the file. On the web page, open "Constructor values" under the file: every parameter of the contract is listed with the value the tool would use, and you change only the ones you know. "Paste values instead" takes `NAME=VALUE` lines or this JSON. When a run leaves paths unexplored, the report links back to the form.
 
 ```
 { "cap": 500000000, "feeScript": "0x...", "tokenTemplate": "0x..." }     by name
@@ -146,6 +146,7 @@ Keep it running with pm2 (`pm2 start /path/to/kaspa-redteam --name redteam-web -
 | --- | --- |
 | `GET /` | the page |
 | `POST /api/scan` | `{ filename, source, args: ["name=value"], baseline, baseline_name }` → `{ report, files }` (`report` is the `--json` report) |
+| `POST /api/params` | `{ files: [{ filename, source }] }` → each contract's constructor parameters with the value the tool would use and whether it plays them (`kaspa-redteam params FILE...`) |
 | `POST /api/scan` (project) | `{ files: [{ filename, source }], args }` → `{ report: { project, reports }, files }`; finding files are named `<stem>/<ID>.json` |
 | `GET /api/library` | the attack library |
 | `GET /og.png` | the link-preview card (Open Graph / X) |
