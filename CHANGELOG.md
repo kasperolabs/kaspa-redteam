@@ -1,5 +1,13 @@
 # Changelog
 
+## Tool 0.13.0 (library 0.9.0)
+
+- Orders that keep the token's ids in their state and read the token by hand (byte slices, hand-built scripts):
+  - The token coin is tried as the order's own first, as before; if that cannot be built, once more as the spender's own coin (a seller filling a bid). A path that was explored before takes the same route.
+  - A check on raw bytes of the token coin (`tin.slice(43, 46) == 0x040100`) is repaired in the coin's encoded state when the bytes occur there once, and only when no other repair applies.
+  - A number passed as fixed bytes (`byte[8] nb`, `int n = int(nb)`) is repaired and seeds branches like an int (`if (n == 0)`).
+  - Index arguments are placed for stateful orders too; a delivery at the slot drafted for the order's continuation gets the token's binding; a continuation the order asks for is added; drafted token outputs nothing asked for, and a duplicate holding exactly the excess, are dropped.
+
 ## Tool 0.12.1 (library 0.9.0)
 
 - Links for contracts that read the token by hand (no `readInputStateWithTemplate`): when the project has exactly one token program (a leader transfer entry and a follower), a `byte[32]` value named for a template (`tokenTplHash`, `tokenTemplateHash`) is its template hash, and ints named for the template's prefix and suffix are their lengths. A value the file uses as its own template hash is left alone.

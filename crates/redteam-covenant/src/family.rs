@@ -395,6 +395,15 @@ fn repair(d: &mut Draft, built: &crate::sandbox::Built, f: &FailedCheck, main: &
                     d.plan.outputs[k].covenant = Some(CovenantBinding::new(d.sib as u16, id));
                     return true;
                 }
+                // The output whose script was just put in carries the wrong
+                // family (a delivery at the slot drafted for a continuation).
+                if let Some(k) = d.last_fix {
+                    let wrong = d.plan.outputs.get(k).and_then(|o| o.covenant).is_some_and(|c| c.covenant_id != id);
+                    if wrong && d.redeems.contains_key(&k) {
+                        d.plan.outputs[k].covenant = Some(CovenantBinding::new(d.sib as u16, id));
+                        return true;
+                    }
+                }
             }
         }
     }
@@ -492,6 +501,16 @@ fn repair(d: &mut Draft, built: &crate::sandbox::Built, f: &FailedCheck, main: &
                     if let ArgRecipe::Value(ArtifactValue::Int(x)) = a {
                         if *x == na && na != want {
                             *x = want;
+                            return true;
+                        }
+                    }
+                }
+                // A number passed as fixed bytes and converted in the script
+                // (`byte[8] nb`, `int n = int(nb)`): the same bytes, re-encoded.
+                for a in args.iter_mut() {
+                    if let ArgRecipe::Value(ArtifactValue::Bytes(v)) = a {
+                        if v.len() == 8 && *v == f.a && na != want && want >= 0 {
+                            *v = (want as u64).to_le_bytes().to_vec();
                             return true;
                         }
                     }
@@ -707,6 +726,36 @@ fn rest_to_spender(d: &mut Draft, f: &FailedCheck, sib: &Program, main: &Contrac
     if f.input != d.sib || f.a.len() > 8 || f.b.len() > 8 {
         return false;
     }
+    // More new coins of the other program than it has states for
+    // (`next_states.length == OpAuthOutputCount(...)`): the drafted ones
+    // nothing asked for (no script learned for them) go.
+    let sib_id = Hash::from_bytes(sib.cov_id);
+    let bound = d.plan.outputs.iter().filter(|o| o.covenant.map(|c| c.covenant_id) == Some(sib_id)).count();
+    let small = |v: &[u8]| v.len() <= 1;
+    let (fa, fb) = (f.a.first().copied().unwrap_or(0) as usize, f.b.first().copied().unwrap_or(0) as usize);
+    if f.op.starts_with("OpNumEqual") && small(&f.a) && small(&f.b) && fa < fb && fb == bound {
+        let idle: Vec<usize> = d
+            .plan
+            .outputs
+            .iter()
+            .enumerate()
+            .filter(|(k, o)| o.covenant.map(|c| c.covenant_id) == Some(sib_id) && !d.redeems.contains_key(k))
+            .map(|(k, _)| k)
+            .collect();
+        if !idle.is_empty() && d.redeems.keys().any(|k| d.plan.outputs.get(*k).and_then(|o| o.covenant).map(|c| c.covenant_id) == Some(sib_id)) {
+            for k in idle.iter().rev() {
+                let gone = d.plan.outputs[*k].value;
+                d.plan.outputs.remove(*k);
+                if let Some(InputSpec::P2pk { value, .. }) = d.plan.inputs.iter_mut().find(|i| matches!(i, InputSpec::P2pk { .. })) {
+                    *value = value.saturating_sub(gone).max(BASE_FEE * 2);
+                }
+                d.redeems = std::mem::take(&mut d.redeems).into_iter().map(|(j, r)| (if j > *k { j - 1 } else { j }, r)).collect();
+                d.repaired = d.repaired.iter().filter(|j| *j != k).map(|j| if *j > *k { j - 1 } else { *j }).collect();
+                d.last_fix = None;
+            }
+            return true;
+        }
+    }
     // Too few new coins for the other program (`OpAuthOutputCount(...) >= 1`):
     // the spender takes all that is not accounted for.
     let too_few = f.op.starts_with("OpGreaterThan") && f.recent.iter().any(|r| r == "OpAuthOutputCount");
@@ -721,6 +770,32 @@ fn rest_to_spender(d: &mut Draft, f: &FailedCheck, sib: &Program, main: &Contrac
         if v.last().is_some_and(|b| b & 0x80 != 0) { -n } else { n }
     };
     let Some(st) = d.sib_state.clone() else { return false };
+    // More out than in: a new coin of exactly the excess, drafted but not asked
+    // for by the coin under test (a second copy), goes.
+    if !too_few && f.op.starts_with("OpNumEqual") {
+        let (o, i) = (num(&f.a), num(&f.b));
+        if o > i {
+            let excess = o - i;
+            let k = d
+                .redeems
+                .iter()
+                .filter(|(k, _)| d.plan.outputs.get(**k).and_then(|x| x.covenant).map(|c| c.covenant_id) == Some(sib_id))
+                .filter(|(_, r)| decode_state(&sib.contract, r).is_some_and(|x| x.get("amount") == Some(&ArtifactValue::Int(excess))))
+                .map(|(k, _)| *k)
+                .max();
+            if let (Some(k), true) = (k, d.redeems.len() > 1) {
+                let gone = d.plan.outputs[k].value;
+                d.plan.outputs.remove(k);
+                if let Some(InputSpec::P2pk { value, .. }) = d.plan.inputs.iter_mut().find(|i| matches!(i, InputSpec::P2pk { .. })) {
+                    *value = value.saturating_sub(gone).max(BASE_FEE * 2);
+                }
+                d.redeems = std::mem::take(&mut d.redeems).into_iter().filter(|(j, _)| *j != k).map(|(j, r)| (if j > k { j - 1 } else { j }, r)).collect();
+                d.repaired = d.repaired.iter().filter(|j| **j != k).map(|j| if *j > k { j - 1 } else { *j }).collect();
+                d.last_fix = None;
+                return true;
+            }
+        }
+    }
     let (out_total, in_total) = if too_few {
         let sib_id = Hash::from_bytes(sib.cov_id);
         let have: i64 = d
@@ -849,6 +924,33 @@ fn add_or_drop_coins(d: &mut Draft, f: &FailedCheck, sib: &Program, key: &secp25
         .filter(|(_, o)| matches!(o.to, Dest::SelfCovenant | Dest::Successor(_)))
         .map(|(k, _)| k)
         .collect();
+    // The coin under test asked to continue (`OpCovOutputCount(self) == 1`) and
+    // no output does: a continuation of its own, with its value.
+    if f.op.starts_with("OpNumEqual") && na == 0 && nb == 1 && mine.is_empty() && counted("OpCovOutputCount") && outs.len() != 0 {
+        let value = match d.plan.inputs.first() {
+            Some(InputSpec::Covenant { value, .. }) => *value,
+            _ => return false,
+        };
+        let state = match d.plan.inputs.first() {
+            Some(InputSpec::Covenant { state: Some(st), .. }) => Some(st.clone()),
+            _ => None,
+        };
+        let to = match state {
+            Some(st) => Dest::Successor(st),
+            None => Dest::SelfCovenant,
+        };
+        let at = d.plan.outputs.iter().position(|o| o.to == Dest::Key(KeyRef::Attacker)).unwrap_or(d.plan.outputs.len());
+        d.plan.outputs.insert(at, OutputSpec::new(value, to));
+        // Indexes after `at` move up by one.
+        let moved: BTreeMap<usize, Vec<u8>> = std::mem::take(&mut d.redeems).into_iter().map(|(k, r)| (if k >= at { k + 1 } else { k }, r)).collect();
+        d.redeems = moved;
+        d.repaired = d.repaired.iter().map(|k| if *k >= at { k + 1 } else { *k }).collect();
+        d.last_fix = d.last_fix.map(|k| if k >= at { k + 1 } else { k });
+        if let Some(InputSpec::P2pk { value: v, .. }) = d.plan.inputs.iter_mut().find(|i| matches!(i, InputSpec::P2pk { .. })) {
+            *v += value;
+        }
+        return true;
+    }
     if f.op.starts_with("OpNumEqual") && nb == 0 && na == mine.len() && na > 0 && counted("OpCovOutputCount") {
         for k in mine.iter().rev() {
             let gone = d.plan.outputs[*k].value;
@@ -892,8 +994,22 @@ pub fn explore_branches(main: &Contract, entry: &str, programs: &[Program], judg
     let Some(me) = main.entry(entry) else { return vec![] };
     let flat: String = body.split_whitespace().collect();
     let mut out = Vec::new();
-    for p in me.params.iter().filter(|p| matches!(p.ty, TypeArtifact::Int)) {
-        if flat.contains(&format!("if({}==0)", p.name)) {
+    for p in me.params.iter().filter(|p| matches!(p.ty, TypeArtifact::Int | TypeArtifact::FixedBytes { len: 8 })) {
+        // The number itself, or a local read from it (`int n = int(nb);`).
+        let local = body.lines().find_map(|l| {
+            let (lhs, rhs) = l.split_once('=')?;
+            let rhs: String = rhs.split_whitespace().collect();
+            if !rhs.starts_with(&format!("int({})", p.name)) {
+                return None;
+            }
+            let mut w = lhs.split_whitespace();
+            (w.next() == Some("int")).then(|| w.next().map(str::to_string)).flatten()
+        });
+        let tested = |v: &str| flat.contains(&format!("if({v}==0)"));
+        if std::env::var_os("REDTEAM_DEBUG").is_some() {
+            eprintln!("branches {entry}: param {} {:?} local {:?} tested {}", p.name, p.ty, local, local.as_deref().is_some_and(tested) || tested(&p.name));
+        }
+        if tested(&p.name) || local.as_deref().is_some_and(tested) {
             let Some((mut st, notes)) = explore_seeded(main, entry, programs, judge, Some((p.name.clone(), 1)), 1, Borrow::No) else { continue };
             st.entry = format!("{}[{}>0]", st.entry, p.name);
             let shape = |s: &PathStatus| s.baseline.as_ref().map(|b| b.plan.outputs.len());
@@ -983,7 +1099,16 @@ fn explore_seeded(
                 }
             }
         }
-        let keyed = !in_state && !body.contains("readInputState");
+        // Who owns the coin spent alongside: the coin under test (custody),
+        // unless the entry never reads it; and if the custody draft cannot be
+        // built, once more with the spender's own coin (a seller filling a bid
+        // whose code keeps the token's id in its state). The first try is the
+        // one that worked before, so nothing that was explored changes.
+        let first = !in_state && !body.contains("readInputState");
+        let tries = if first || borrow != Borrow::No { vec![first] } else { vec![false, true] };
+        let base_state = sib_state.clone();
+        for keyed in tries {
+        let mut sib_state = base_state.clone();
         if keyed {
             let attacker = main.wallets.attacker.xonly().to_vec();
             for f in cov_fields(&sib.contract) {
@@ -1081,7 +1206,9 @@ fn explore_seeded(
                     let prog = programs.iter().find(|pr| norm(&pr.contract.contract_name) == core)?;
                     let (pre, suf) = template_parts(&prog.contract)?;
                     ArtifactValue::Bytes(if n.contains("prefix") { pre } else { suf })
-                } else if matches!(p.ty, TypeArtifact::Int) && !in_state {
+                } else if matches!(p.ty, TypeArtifact::Int)
+                    && (!in_state || flat.contains(&format!("OpInputCovenantId({})", p.name)) || flat.contains(&format!("tx.inputs[{}]", p.name)) || flat.contains(&format!("tx.outputs[{}]", p.name)))
+                {
                     // An index the spender names: the other program's input,
                     // or its second new coin.
                     let q = &p.name;
@@ -1092,8 +1219,9 @@ fn explore_seeded(
                         format!("validateOutputStateWithInputTemplate({q},"),
                         format!("OpOutputCovenantId({q})"),
                     ]) {
-                        // The other program's new coin comes first.
-                        ArtifactValue::Int(0)
+                        // The other program's new coin: first for a coin with no
+                        // state, after the two continuations otherwise.
+                        ArtifactValue::Int(if in_state { 2 } else { 0 })
                     } else if has(&[
                         format!("OpInputCovenantId({q})"),
                         format!("tx.inputs[{q}]"),
@@ -1104,7 +1232,7 @@ fn explore_seeded(
                         ArtifactValue::Int(1)
                     } else if flat.contains(&format!("tx.outputs[{q}].scriptPubKey==this.activeScriptPubKey")) {
                         // Its own continuation.
-                        ArtifactValue::Int(1)
+                        ArtifactValue::Int(if in_state { 0 } else { 1 })
                     } else if flat.contains(&format!("tx.outputs[{q}]")) {
                         ArtifactValue::Int(2)
                     } else {
@@ -1163,7 +1291,11 @@ fn explore_seeded(
             let sib_key = keyed.then_some(main.wallets.attacker.keypair);
             if let (Some((name, v)), Some(InputSpec::Covenant { args, .. })) = (&seed, plan.inputs.get_mut(0)) {
                 if let Some(i) = me.params.iter().position(|p| &p.name == name) {
-                    args[i] = ArgRecipe::Value(ArtifactValue::Int(*v));
+                    args[i] = ArgRecipe::Value(if matches!(me.params[i].ty, TypeArtifact::FixedBytes { len: 8 }) {
+                        ArtifactValue::Bytes((*v as u64).to_le_bytes().to_vec())
+                    } else {
+                        ArtifactValue::Int(*v)
+                    });
                 }
             }
             let mut d = Draft { plan, sib: 1, sib_entry: sib_entry.name.clone(), sib_args: vec![], redeems: BTreeMap::new(), repaired: Default::default(), sib_state: Some(sib_state.clone()), delegate: None, sib_key, last_fix: None, frozen: match borrow {
@@ -1261,10 +1393,11 @@ fn explore_seeded(
                 if rest_to_spender(&mut d, &f, sib, main) {
                     continue;
                 }
-                if !repair(&mut d, &built, &f, main) {
+                if !repair(&mut d, &built, &f, main) && !slice_fix(&mut d, &f, sib) {
                     break;
                 }
             }
+        }
         }
     }
     None
@@ -2613,4 +2746,41 @@ fn p2sh_owned(sib: &Program, d: &Draft) -> bool {
     let Some((sel, _)) = cov_branch(&sib.contract) else { return false };
     let consts = source_consts(&sib.contract.source);
     consts.iter().any(|(n, v)| n.contains("P2SH") && st.get(&sel) == Some(v))
+}
+
+/// A check on raw bytes of the coin spent alongside (`tin.slice(43, 46) ==
+/// 0x040100`, read by hand rather than by field): when the compared bytes
+/// occur once in that coin's encoded state, they are replaced there and the
+/// state is read back. Tried only when no other repair applies.
+fn slice_fix(d: &mut Draft, f: &FailedCheck, sib: &Program) -> bool {
+    if !matches!(f.op.as_str(), "OpEqual" | "OpEqualVerify") || f.a.len() != f.b.len() || f.a.is_empty() || f.a == f.b {
+        return false;
+    }
+    let Some(st) = d.sib_state.clone() else { return false };
+    let Some(redeem) = encode_state(&sib.contract, &st) else { return false };
+    let Some((pre, suf)) = template_parts(&sib.contract) else { return false };
+    if redeem.len() < pre.len() + suf.len() {
+        return false;
+    }
+    let body = &redeem[pre.len()..redeem.len() - suf.len()];
+    for (from, to) in [(&f.a, &f.b), (&f.b, &f.a)] {
+        let hits: Vec<usize> = body.windows(from.len()).enumerate().filter(|(_, w)| *w == from.as_slice()).map(|(i, _)| i).collect();
+        if hits.len() != 1 {
+            continue;
+        }
+        let mut nb = body.to_vec();
+        nb[hits[0]..hits[0] + to.len()].copy_from_slice(to);
+        let mut full = pre.clone();
+        full.extend(&nb);
+        full.extend(&suf);
+        if let Some(new) = decode_state(&sib.contract, &full) {
+            let frozen = &d.frozen;
+            if new.iter().any(|(k, v)| frozen.contains(k) && st.get(k) != Some(v)) {
+                continue;
+            }
+            d.sib_state = Some(new);
+            return true;
+        }
+    }
+    false
 }
