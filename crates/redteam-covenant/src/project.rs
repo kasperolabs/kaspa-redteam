@@ -151,8 +151,24 @@ pub fn detect(files: &[ProjectFile], overrides: &BTreeMap<String, String>) -> Re
             if !is_param(&tpl) || linked_names.contains(&tpl) && !per_file[ai].values.contains_key(&tpl) {
                 continue;
             }
-            let others: Vec<usize> =
-                (0..compiled.len()).filter(|bi| *bi != ai && !compiled[*bi].template.is_empty()).collect();
+            // The other program is the one whose state is the struct the call
+            // reads or writes (`KCC20State { amount, owner, ... }`); a program
+            // without that state cannot be it, even when it is the only other one.
+            let structs: Vec<Vec<String>> = a
+                .contract
+                .artifact
+                .as_ref()
+                .map(|art| art.structs.values().map(|s| s.fields.iter().map(|f| f.name.clone()).collect()).collect())
+                .unwrap_or_default();
+            let fits = |b: &Compiled| {
+                structs.is_empty() || {
+                    let mine: Vec<String> = b.contract.state_fields.iter().map(|(n, _)| n.clone()).collect();
+                    !mine.is_empty() && structs.iter().any(|s| *s == mine)
+                }
+            };
+            let others: Vec<usize> = (0..compiled.len())
+                .filter(|bi| *bi != ai && !compiled[*bi].template.is_empty() && fits(&compiled[*bi]))
+                .collect();
             let bi = match per_file[ai].values.get(&tpl) {
                 Some((prog, _)) => match compiled.iter().position(|c| &c.contract.contract_name == prog) {
                     Some(i) => i,
@@ -173,6 +189,39 @@ pub fn detect(files: &[ProjectFile], overrides: &BTreeMap<String, String>) -> Re
                         if a.contract.args.iter().any(|x| &x.name == name && x.ty == "int" && x.origin != "override") {
                             per_file[ai].ints.insert(name.clone(), (b.contract.contract_name.clone(), v as i64));
                         }
+                    }
+                }
+            }
+        }
+        // Covenant ids by role: a constructor value the source compares to a
+        // coin's covenant id (`OpInputCovenantId(i) == tokenCovId`) names the
+        // family of the program its template links to. In the sandbox that
+        // family has a fixed id, so the coins the tool builds carry it.
+        let targets: std::collections::BTreeSet<String> = per_file[ai].values.values().map(|(p, _)| p.clone()).collect();
+        if targets.len() == 1 {
+            let prog = targets.iter().next().unwrap().clone();
+            if let Some(b) = compiled.iter().find(|c| c.contract.contract_name == prog) {
+                let src: String = a.contract.source.split_whitespace().collect::<Vec<_>>().join(" ");
+                for arg in a.contract.args.iter().filter(|x| x.ty == "byte[32]" && x.origin != "override") {
+                    let n = &arg.name;
+                    if per_file[ai].values.contains_key(n) {
+                        continue;
+                    }
+                    let pat = format!("== {n}");
+                    let mut used = false;
+                    let mut from = 0;
+                    while let Some(at) = src[from..].find(&pat) {
+                        let at = from + at;
+                        let after = src[at + pat.len()..].chars().next().unwrap_or(' ');
+                        let before = &src[at.saturating_sub(60)..at];
+                        if !(after.is_alphanumeric() || after == '_') && before.contains("CovenantId(") {
+                            used = true;
+                        }
+                        from = at + pat.len();
+                    }
+                    if used {
+                        per_file[ai].values.insert(n.clone(), (b.contract.contract_name.clone(), crate::family::family_id(&b.file).to_vec()));
+                        links.push(Link { from: a.file.clone(), via: n.clone(), to: b.file.clone(), kind: "covenant id" });
                     }
                 }
             }
@@ -251,6 +300,13 @@ pub fn run(
                 let found = crate::family::explore(&t.contract, &name, &programs, judge)
                     .or_else(|| crate::family::explore_genesis(&t.contract, &name, &programs, judge))
                     .or_else(|| crate::family::explore_owned(&t.contract, &name, &programs, judge));
+                // The entry's other branches, each its own path.
+                for (status, notes) in crate::family::explore_branches(&t.contract, &name, &programs, judge) {
+                    if !t.paths.iter().any(|p| p.entry == status.entry) {
+                        t.paths.push(status);
+                        family_notes.extend(notes);
+                    }
+                }
                 if let Some((status, notes)) = found {
                     // A path no single-program spend opened is replaced; an explored
                     // one gains its family variant (a mint next to a heartbeat).
@@ -263,10 +319,15 @@ pub fn run(
             }
         }
         let mut notes = t.notes;
-        notes.extend(family_notes);
+        for n in family_notes {
+            if !notes.contains(&n) {
+                notes.push(n);
+            }
+        }
         for x in links.iter().filter(|x| x.from == f.name) {
             notes.push(match x.kind {
                 "address" => format!("project: `{}` is the address of {} (its real script, not a stand-in)", x.via, x.to),
+                "covenant id" => format!("project: `{}` is the covenant id of {}'s coins (a fixed id in the sandbox)", x.via, x.to),
                 _ => format!("project: `{}` pins the program of {}", x.via, x.to),
             });
         }
@@ -306,7 +367,19 @@ pub fn run(
         // The owner the data named: a key the tool holds ("depositor"), tried
         // first; and the minted state is where this program's coins start, so
         // a second coin spent alongside (a delegate) is a minted one too.
-        let i_dep = c.wallets.party("depositor");
+        // Keys are derived from their labels, so the owner may be a party of
+        // another file (an order's `maker`): that label, if it is the owner.
+        let owner_label = files
+            .iter()
+            .filter_map(|g| silverscript_lang::ast::parse_contract_ast(&g.source).ok())
+            .flat_map(|a| a.params.into_iter().map(|p| p.name))
+            .chain(["depositor".to_string()])
+            .find(|l| {
+                let x = crate::wallets::Wallet::derive(l).xonly().to_vec();
+                state.values().any(|v| *v == ArtifactValue::Bytes(x.clone()))
+            })
+            .unwrap_or_else(|| "depositor".into());
+        let i_dep = c.wallets.party(&owner_label);
         let dep = c.wallets.parties.remove(i_dep);
         c.wallets.parties.insert(0, dep);
         // The program's own bytes carry the minted state, so its coins are the

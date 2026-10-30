@@ -282,6 +282,12 @@ impl SpendPlan {
     pub fn has_resigned(&self) -> bool {
         self.inputs.iter().any(|i| matches!(i, InputSpec::Raw(r) if r.resign.is_some()))
     }
+    /// Some re-signed input belongs to a key other than `attacker` (a seller's
+    /// key from a baseline, an honest owner), not just the spender's own coin.
+    pub fn resigned_by_other(&self, attacker: &secp256k1::Keypair) -> bool {
+        let me = attacker.x_only_public_key().0;
+        self.inputs.iter().any(|i| matches!(i, InputSpec::Raw(r) if r.resign.as_ref().is_some_and(|rs| rs.keypair.x_only_public_key().0 != me)))
+    }
     pub fn has_sig_recipe(&self) -> bool {
         self.inputs.iter().any(
             |i| matches!(i, InputSpec::Covenant { args, .. } if args.iter().any(|a| matches!(a, ArgRecipe::Sig(_) | ArgRecipe::SigBytes { .. }))),
@@ -770,6 +776,9 @@ pub struct FailedCheck {
     pub b: Vec<u8>,
     /// Every stack element seen during the run (preimages of hashes live here).
     pub seen: Vec<Vec<u8>>,
+    /// The opcodes run just before the comparison (what produced its operands:
+    /// `OpCovOutputCount`, `OpTxInputAmount`, ...).
+    pub recent: Vec<String>,
 }
 
 pub fn trace_failure(b: &Built, input: usize) -> Option<FailedCheck> {
@@ -817,6 +826,11 @@ pub fn trace_failure(b: &Built, input: usize) -> Option<FailedCheck> {
             }
         }
     }
+    if std::env::var_os("REDTEAM_TRACE").is_some() {
+        for l in lines.iter().rev().take(40).rev() {
+            eprintln!("      {}", &l[..l.len().min(160)]);
+        }
+    }
     let (last_op, last_stack) = parse(lines.last()?);
     let (op, stack) = if last_op.ends_with("Verify") && last_op != "OpVerify" {
         (last_op, last_stack)
@@ -829,5 +843,7 @@ pub fn trace_failure(b: &Built, input: usize) -> Option<FailedCheck> {
         return None;
     }
     let n = stack.len();
-    Some(FailedCheck { input, op, a: stack[n - 2].clone(), b: stack[n - 1].clone(), seen })
+    let at = lines.iter().rposition(|l| parse(l).0 == op).unwrap_or(lines.len());
+    let recent = lines[at.saturating_sub(6)..at].iter().map(|l| parse(l).0).collect();
+    Some(FailedCheck { input, op, a: stack[n - 2].clone(), b: stack[n - 1].clone(), seen, recent })
 }

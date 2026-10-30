@@ -73,8 +73,10 @@ pub fn spend_map(c: &Contract, paths: &[PathStatus]) -> serde_json::Value {
                     } else if !b.signers.is_empty() {
                         let names: Vec<_> = b.signers.iter().map(|k| c.wallets.label(*k)).collect();
                         format!("signed by {}", names.join(" + "))
-                    } else if b.plan.has_resigned() {
+                    } else if b.plan.resigned_by_other(&c.wallets.attacker.keypair) {
                         "a user holding the baseline's listed key (the tool re-signs)".to_string()
+                    } else if b.plan.has_resigned() {
+                        "anyone, with a coin of their own they sign for (the tool re-signs)".to_string()
                     } else if !b.secrets.is_empty() {
                         if b.secrets.iter().any(|s| s.contains("test proof")) {
                             "anyone holding a valid proof, which every spend reveals (the tool used its test proof; no transaction signature)".to_string()

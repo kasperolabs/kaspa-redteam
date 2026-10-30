@@ -1,5 +1,16 @@
 # Changelog
 
+## Tool 0.9.0 (library 0.7.0)
+
+- A fourth family shape: orders. A coin with no state of its own that names a token by constructor values (`tokenCovId`, `tokenTplHash`) and trades with a KCC-20 coin in the same transaction (a bid paying KAS for tokens, an ask selling its tokens). Benchmarked on a bid and an ask from another team's order book with the KCC-20 reference program: `fill`, `settle` (refund) and `settle[n>0]` (fill) explored, 0 findings.
+- Project links: a template argument links to the program whose state is the struct the call reads or writes, not just "the only other file" (two orders and a token in one upload linked the bid to the ask before). A `byte[32]` constructor value the source compares to a coin's covenant id gets that program's covenant id in the sandbox (new link kind `covenant id`).
+- An entry that switches on a number argument (`if (n == 0) { refund } else { fill }`) has each branch explored as its own path (`settle+transfer[n>0]`).
+- Repairs: lock times a path asks for; the other program's own books (`output_total == input_total`: the spender takes the rest as a coin of its own); an order ending instead of continuing (`OpCovOutputCount(self) == 0`); an output value plus a contract constant (`value + refundTip >= carriers`); a coin a key owns signs for itself (re-signed after every change). Count repairs act only when the script really counted coins (the opcodes before the comparison are now part of the failed check).
+- FAM-04 on orders: the delivered coin is a look-alike with no covenant id while the real tokens stay with the attacker. A bid without `OpOutputCovenantId(out) == tokenCovId` is caught.
+- The spend map and findings no longer say "only a user holding the listed key" when the only re-signed coin is the attacker's own.
+- KAS the repairs left to the miner goes back to the spender's change, so the honest spend pays a normal fee (no OUT-04 on the tool's own overfunding).
+- `REDTEAM_TRACE=1` (with `REDTEAM_DEBUG=1`) prints the last opcodes before each failed check.
+
 ## Tool 0.8.2 (library 0.7.0)
 
 - A follower entry (one that requires another coin of its covenant to lead, `OpCovInputIdx(id, 0) != this.activeInputIndex`) gets a short solo search, and its time goes to pairing it with a leader. Before, its solo search used the whole budget first, and on a slower server the pairing step ran out of time (`minted:transfer_delegator` unexplored). The curve project now takes 2.5 s instead of 13.6 s.

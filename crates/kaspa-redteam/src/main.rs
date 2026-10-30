@@ -326,7 +326,7 @@ fn project(a: &ScanArgs, overrides: &BTreeMap<String, String>, file_notes: Vec<S
             started.elapsed().as_secs_f64()
         );
         for l in &links {
-            let what = if l.kind == "address" { "pays to the address of" } else { "pins the program of" };
+            let what = match l.kind { "address" => "pays to the address of", "covenant id" => "is the covenant id of the coins of", _ => "pins the program of" };
             println!("  {} `{}` {} {}", l.from, l.via, what, l.to);
         }
         if links.is_empty() {
