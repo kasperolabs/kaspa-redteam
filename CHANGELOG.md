@@ -1,5 +1,11 @@
 # Changelog
 
+## Tool 0.4.6 (library 0.3.1)
+
+- Constructor values take Kaspa addresses: `kaspa:q...` gives a key, `kaspa:p...` a contract's script hash (on the command line, in values files and on the page). A contract address where a key is expected, or a typo, is an error.
+- Web form: each value says what it is in plain words ("script hash of another contract: paste its kaspa:p… address", "amount in sompi", "time in milliseconds since 1970") and shows it in human terms next to the box (KAS, a UTC date, "30 days", a percentage). Addresses are checked as you type.
+- Fix: your own address for a P2SH parameter (`treasury=kaspa:p...`) is paid to as given; before, it left the paths that pay it unexplored.
+
 ## Tool 0.4.5 (library 0.3.1)
 
 - Web page: "Constructor values" is a form built from the contract, folded under the file with a summary ("11 · 2 yours, 9 test values"). Every parameter is filled in for testing; a value you change becomes yours, and amounts show in KAS. Keys and hash locks are listed as played by the tool. A report with unexplored paths links back to the form. The old text box is under "Paste values instead".

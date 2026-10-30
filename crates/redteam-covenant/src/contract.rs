@@ -19,6 +19,9 @@ pub struct StandIn {
     /// The address of another contract in the same project (its real script).
     /// Such a coin can be paid but not spent by the sandbox.
     pub linked: Option<String>,
+    /// A real script hash given by the user (an address the tool has no script
+    /// for): paid to by its hash, never spent.
+    pub hash: Option<Vec<u8>>,
 }
 
 impl StandIn {
@@ -26,7 +29,7 @@ impl StandIn {
         // <label> OP_DROP OP_TRUE
         let mut redeem = crate::sandbox::push_data(format!("redteam-standin:{label}").as_bytes()).expect("small push");
         redeem.extend_from_slice(&[0x75, 0x51]);
-        Self { label: label.into(), redeem, linked: None }
+        Self { label: label.into(), redeem, linked: None, hash: None }
     }
 }
 
@@ -131,16 +134,28 @@ impl Contract {
             let type_name = p.type_ref.type_name();
             let ty = parse_type(&type_name).with_context(|| format!("constructor `{}`", p.name))?;
             let (value, origin) = match overrides.get(&p.name) {
-                Some(raw) => (
-                    parse_override(raw, &ty, &mut wallets).with_context(|| format!("--arg {}", p.name))?,
-                    "override".into(),
-                ),
+                Some(raw) => {
+                    let v = parse_override(raw, &ty, &mut wallets).with_context(|| format!("--arg {}", p.name))?;
+                    // Your own address of another contract: paid to as given.
+                    if let ArtifactValue::Bytes(h) = &v {
+                        if h.len() == 32 && matches!(hash_use(source, &p.name), HashUse::P2shTarget) {
+                            stand_ins.push(StandIn {
+                                label: p.name.clone(),
+                                redeem: vec![],
+                                linked: Some("your address".into()),
+                                hash: Some(h.clone()),
+                            });
+                        }
+                    }
+                    (v, "override".into())
+                }
                 None => match links.p2sh.get(&p.name) {
                     Some((program, redeem)) if matches!(ty, TypeArtifact::FixedBytes { len: 32 }) => {
                         stand_ins.push(StandIn {
                             label: format!("{} ({program})", p.name),
                             redeem: redeem.clone(),
                             linked: Some(program.clone()),
+                            hash: None,
                         });
                         (ArtifactValue::Bytes(blake2b(redeem)), format!("address of {program}"))
                     }
@@ -388,6 +403,50 @@ enum HashUse {
     SecretBlake2b,
 }
 
+/// A short plain-words description of what a constructor parameter holds, and
+/// a kind the web form uses to show the value in human terms (`ms` time,
+/// `ms-span`, `daa`, `daa-span`, `sompi`, `bps`, `p2sh`).
+pub fn param_hint(source: &str, name: &str, ty: &str) -> (Option<&'static str>, String) {
+    let n = name.to_ascii_lowercase();
+    let wall = source.contains("tx.time") && !source.contains("ageDaa");
+    let span = ["period", "duration", "interval", "delay", "window", "timeout", "blocks"].iter().any(|k| n.ends_with(k));
+    let timeish = span
+        || ["time", "start", "end", "deadline", "until", "after", "at", "expiry", "expires", "daa", "lock"].iter().any(|k| n.ends_with(k));
+    match ty {
+        "byte[32]" => match hash_use(source, name) {
+            HashUse::P2shTarget => (Some("p2sh"), "script hash of another contract: paste its kaspa:p… address".into()),
+            HashUse::Key => (None, "a key: a kaspa:q… address or 32 bytes of hex".into()),
+            HashUse::PubkeyBlake2b => (None, "hash of a key".into()),
+            _ if n.contains("template") => (None, "template hash of a contract program (64 hex)".into()),
+            _ if n.contains("covid") || n.contains("covenant") || n.ends_with("id") => (None, "covenant id (64 hex)".into()),
+            _ if n.contains("commitment") => (None, "commitment hash (64 hex)".into()),
+            _ if played_by_tool(source, name).is_some() => (None, "hash lock".into()),
+            _ => (None, "32 bytes as hex, or a kaspa: address".into()),
+        },
+        "int" | "temporal" if timeish || ty == "temporal" => {
+            if wall {
+                if span {
+                    (Some("ms-span"), "duration in milliseconds".into())
+                } else {
+                    (Some("ms"), "time in milliseconds since 1970".into())
+                }
+            } else if span || n.contains("delay") || n.contains("age") {
+                (Some("daa-span"), "DAA score difference (about 10 per second)".into())
+            } else {
+                (Some("daa"), "DAA score (the chain's clock, about 10 per second)".into())
+            }
+        }
+        "int" if n.contains("bps") || n.contains("basis") => (Some("bps"), "basis points (100 = 1%)".into()),
+        "int" if ["count", "periods", "installments", "rounds", "slots", "max_ins", "maxins"].iter().any(|k| n.contains(k)) => {
+            (None, "a count".into())
+        }
+        "int" => (Some("sompi"), "amount in sompi (100,000,000 = 1 KAS)".into()),
+        "pubkey" => (None, "a key".into()),
+        "bool" => (None, "true or false".into()),
+        _ => (None, String::new()),
+    }
+}
+
 /// What the tool must play itself for a `byte[32]` parameter, because a real
 /// value would need a secret it does not have: a key, a key hash, a hash lock.
 pub fn played_by_tool(source: &str, name: &str) -> Option<&'static str> {
@@ -567,7 +626,21 @@ fn default_value(
 
 /// `--arg` syntax: `123`, `-5`, `0xdeadbeef`, `true`, `@alice` (pubkey of a test
 /// party named alice, created if new), anything else is text.
+/// A Kaspa address (`kaspa:q...` key, `kaspa:p...` script hash) as its payload bytes.
+pub fn decode_address(raw: &str) -> Option<(kaspa_addresses::Version, Vec<u8>)> {
+    let a = kaspa_addresses::Address::try_from(raw.trim()).ok()?;
+    Some((a.version, a.payload.to_vec()))
+}
+
 fn parse_override(raw: &str, ty: &TypeArtifact, w: &mut Wallets) -> Result<ArtifactValue> {
+    if raw.trim().starts_with("kaspa") && raw.contains(':') {
+        let (version, payload) =
+            decode_address(raw).ok_or_else(|| anyhow!("`{raw}` is not a valid Kaspa address (check for a typo)"))?;
+        if matches!(ty, TypeArtifact::Pubkey) && version != kaspa_addresses::Version::PubKey {
+            bail!("`{raw}` is a contract (P2SH) address; this parameter takes a key, a kaspa:q... address");
+        }
+        return Ok(ArtifactValue::Bytes(payload));
+    }
     if let Some(label) = raw.strip_prefix('@') {
         let i = w.party(label);
         return Ok(ArtifactValue::Bytes(w.parties[i].xonly().to_vec()));
@@ -683,4 +756,24 @@ fn loop_bound(source: &str, name: &str) -> bool {
         rest = after;
     }
     false
+}
+
+#[cfg(test)]
+mod address_tests {
+    use super::*;
+    use kaspa_addresses::{Address, Prefix, Version};
+
+    #[test]
+    fn addresses_decode_to_payloads() {
+        let p2sh = Address::new(Prefix::Mainnet, Version::ScriptHash, &[7u8; 32]).to_string();
+        let key = Address::new(Prefix::Mainnet, Version::PubKey, &[9u8; 32]).to_string();
+        println!("{p2sh}\n{key}");
+        let mut w = Wallets::new();
+        let ty32 = TypeArtifact::FixedBytes { len: 32 };
+        assert_eq!(parse_override(&p2sh, &ty32, &mut w).unwrap(), ArtifactValue::Bytes(vec![7u8; 32]));
+        assert_eq!(parse_override(&key, &TypeArtifact::Pubkey, &mut w).unwrap(), ArtifactValue::Bytes(vec![9u8; 32]));
+        assert!(parse_override(&p2sh, &TypeArtifact::Pubkey, &mut w).is_err());
+        let typo = format!("{}x", &p2sh[..p2sh.len() - 1]);
+        assert!(parse_override(&typo, &ty32, &mut w).is_err());
+    }
 }

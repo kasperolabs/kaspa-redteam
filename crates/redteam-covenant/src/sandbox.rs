@@ -368,7 +368,16 @@ impl Judge {
             Dest::Key(k) => wallets.get(*k).p2pk(),
             Dest::SelfCovenant => pay_to_script_hash_script(&contract.script_for(first_state)?),
             Dest::Successor(s) => pay_to_script_hash_script(&contract.script_for(Some(s))?),
-            Dest::StandIn(i) => pay_to_script_hash_script(&contract.stand_ins[*i].redeem),
+            Dest::StandIn(i) => match &contract.stand_ins[*i].hash {
+                // OP_BLAKE2B <hash> OP_EQUAL: the P2SH script of a hash we have no redeem for.
+                Some(h) => {
+                    let mut script = vec![0xaa, 0x20];
+                    script.extend_from_slice(h);
+                    script.push(0x87);
+                    ScriptPublicKey::new(0, script.into())
+                }
+                None => pay_to_script_hash_script(&contract.stand_ins[*i].redeem),
+            },
             Dest::Raw(spk) => spk.clone(),
         })
     }

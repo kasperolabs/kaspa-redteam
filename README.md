@@ -40,7 +40,7 @@ Rust 1.94+. The SilverScript compiler and the rusty-kaspa consensus code are lib
 kaspa-redteam vault.sil                        # attack it
 kaspa-redteam vault.sil -v                     # every attack + the spend map
 kaspa-redteam vault.sil --arg owner=@alice     # choose constructor values
-kaspa-redteam vault.sil --arg cap=500000000    #   ints, 0xhex, true/false, @party
+kaspa-redteam vault.sil --arg cap=500000000    #   ints, 0xhex, true/false, @party, kaspa:... address
 kaspa-redteam vault.sil --args deploy.json     # constructor values from the JSON you deploy with
 kaspa-redteam vault.sil --args deploy.json --compiled build.json   # test your compiler's exact bytes
 kaspa-redteam vault.sil --no-tune              # keep default constructor values as they are

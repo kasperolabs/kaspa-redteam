@@ -111,7 +111,12 @@ pub fn apply(c: &mut Contract, script: Vec<u8>, real: &BTreeMap<String, String>)
     for (name, raw) in real {
         let Some(arg) = c.args.iter().find(|a| &a.name == name) else { continue };
         let ArtifactValue::Bytes(test) = &arg.value else { continue };
-        let Some(real_bytes) = hex_bytes(raw).filter(|b| b.len() == test.len()) else { continue };
+        let Some(real_bytes) = hex_bytes(raw)
+            .or_else(|| crate::contract::decode_address(raw).map(|(_, p)| p))
+            .filter(|b| b.len() == test.len())
+        else {
+            continue;
+        };
         let (out, n) = replace_push(&bytes, &real_bytes, test);
         if n == 0 {
             missing.push(format!("`{name}`"));

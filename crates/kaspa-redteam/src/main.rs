@@ -421,7 +421,8 @@ fn params(files: &[PathBuf]) -> Result<ExitCode> {
                 } else {
                     None
                 };
-                serde_json::json!({ "name": a.name, "type": a.ty, "value": value, "origin": a.origin, "played": played })
+                let (kind, hint) = redteam_covenant::contract::param_hint(&source, &a.name, &a.ty);
+                serde_json::json!({ "name": a.name, "type": a.ty, "value": value, "origin": a.origin, "played": played, "kind": kind, "hint": hint })
             })
             .collect();
         out.push(serde_json::json!({ "file": name, "params": rows }));
