@@ -249,6 +249,11 @@ footer { margin: 64px 0 40px; padding-top: 18px; border-top: 1px solid var(--lin
           <div class="hint">Honest transactions from your own test harness, for contracts the search cannot spend on its own (token families, sibling programs). Format: <a href="https://github.com/kasperolabs/kaspa-redteam/blob/main/BASELINE.md" rel="noopener">BASELINE.md</a>. Only use throwaway keys.</div>
           <div class="filepick"><input type="file" id="baseline" accept=".json,application/json"></div>
         </details>
+        <details class="adv">
+          <summary>Compiled script (advanced)</summary>
+          <div class="hint">Test the exact bytes your own pinned compiler made, not today's compile: its JSON output (with a <code>bytecode</code> hex) or a hex file. Keep the <code>.sil</code> above, and paste the constructor values it was compiled with; keys and hash locks are swapped for test ones, nothing else is touched.</div>
+          <div class="filepick"><input type="file" id="compiled" accept=".json,.hex,.txt,application/json,text/plain"></div>
+        </details>
       </div>
     </div>
 
@@ -292,7 +297,7 @@ kaspa-redteam vault.sil -v</pre>
 (() => {
   const $ = id => document.getElementById(id);
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const state = { name: "", source: "", baselineName: "", baseline: "", more: [] };
+  const state = { name: "", source: "", baselineName: "", baseline: "", more: [], compiled: "", compiledName: "" };
 
   // ---- input -------------------------------------------------------------
   const drop = $("drop"), file = $("file"), go = $("go"), paste = $("paste");
@@ -336,6 +341,12 @@ kaspa-redteam vault.sil -v</pre>
     refresh();
   };
   paste.oninput = () => { state.source = paste.value; state.more = []; if (state.example) { clearExample(); state.name = "contract.sil"; } state.name = state.name || "contract.sil"; refresh(); };
+  $("compiled").onchange = async e => {
+    const f = e.target.files[0];
+    if (!f) { state.compiled = ""; state.compiledName = ""; return; }
+    if (f.size > 512 * 1024) return showError("That compiled file is over 512 KiB.");
+    state.compiled = await f.text(); state.compiledName = f.name;
+  };
   $("baseline").onchange = async e => {
     const f = e.target.files[0];
     if (!f) { state.baseline = ""; state.baselineName = ""; return refresh(); }
@@ -418,7 +429,7 @@ kaspa-redteam vault.sil -v</pre>
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(state.more.length
           ? { files: [{ filename: state.name, source: state.source }].concat(state.more.map(f => ({ filename: f.name, source: f.source }))), args, args_json: argsJson }
-          : { filename: state.name, source: state.source, args, args_json: argsJson, baseline: state.baseline, baseline_name: state.baselineName }),
+          : { filename: state.name, source: state.source, args, args_json: argsJson, baseline: state.baseline, baseline_name: state.baselineName, compiled: state.compiled }),
       });
       let j; try { j = await r.json(); } catch (_) { j = { error: `The server answered ${r.status}.` }; }
       if (!r.ok || j.error) showError(j.error || `The server answered ${r.status}.`);

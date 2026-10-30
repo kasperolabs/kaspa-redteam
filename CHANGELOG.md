@@ -1,5 +1,9 @@
 # Changelog
 
+## Tool 0.4.4 (library 0.3.1)
+
+- `--compiled FILE`: test the exact script a project's own (pinned) compiler made, with the `.sil` for entries and hints and `--args` for the values it was compiled with. Keys, key hashes and hash locks are swapped in place for the tool's own (same-length pushes); everything else is the given bytes. The report gives the script's sha256 and whether today's compile matches. A script that does not contain the given values, lacks an entry's dispatch tag, or hides its starting state is refused. The web page has a "Compiled script (advanced)" upload.
+
 ## Tool 0.4.3 (library 0.3.1)
 
 - `--args FILE`: constructor values from the JSON a project deploys with (by name, in order, or wrapped in `constructorArgs`). Keys, key hashes and hash locks are played by test keys and secrets, and the report says which; every other value is used exactly. The web page takes the same JSON pasted into the constructor values box.

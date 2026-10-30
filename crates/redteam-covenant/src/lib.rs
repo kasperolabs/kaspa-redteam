@@ -9,6 +9,7 @@
 
 pub mod attacks;
 pub mod baseline;
+pub mod compiled;
 pub mod contract;
 pub mod ctor_file;
 pub mod import;

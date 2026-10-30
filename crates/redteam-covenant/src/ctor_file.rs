@@ -34,6 +34,12 @@ fn scalar(v: &Value) -> Result<String> {
 /// Name -> value strings (as `--arg` takes them), plus notes for the report.
 /// `sources` are the project's contract sources, for parameter names and types.
 pub fn load(raw: &str, sources: &[&str]) -> Result<(BTreeMap<String, String>, Vec<String>)> {
+    load_full(raw, sources).map(|(v, n, _)| (v, n))
+}
+
+/// `load`, plus the real values of the parameters the tool plays (name -> the
+/// file's value), so a compiled script built with them can be matched.
+pub fn load_full(raw: &str, sources: &[&str]) -> Result<(BTreeMap<String, String>, Vec<String>, BTreeMap<String, String>)> {
     let mut v: Value = serde_json::from_str(raw).map_err(|e| anyhow!("the constructor values file is not JSON: {e}"))?;
     for key in ["constructorArgs", "constructor_args", "args", "params", "constructor"] {
         if let Some(inner) = v.get(key) {
@@ -80,11 +86,13 @@ pub fn load(raw: &str, sources: &[&str]) -> Result<(BTreeMap<String, String>, Ve
     // Values that only work with a secret the tool does not have.
     let mut keys = Vec::new();
     let mut played = Vec::new();
+    let mut real = BTreeMap::new();
     for (name, ty) in &params {
         let Some(val) = out.get(name).cloned() else { continue };
         if val.starts_with('@') {
             continue;
         }
+        real.insert(name.clone(), val.clone());
         if ty == "pubkey" {
             out.insert(name.clone(), format!("@{name}"));
             keys.push(name.clone());
@@ -93,6 +101,8 @@ pub fn load(raw: &str, sources: &[&str]) -> Result<(BTreeMap<String, String>, Ve
             if let Some(what) = crate::contract::played_by_tool(src, name) {
                 out.remove(name);
                 played.push(format!("`{name}` ({what})"));
+            } else {
+                real.remove(name);
             }
         }
     }
@@ -117,7 +127,8 @@ pub fn load(raw: &str, sources: &[&str]) -> Result<(BTreeMap<String, String>, Ve
             keys.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ")
         ));
     }
-    Ok((out, notes))
+    real.retain(|k, _| keys.contains(k) || played.iter().any(|p| p.starts_with(&format!("`{k}`"))));
+    Ok((out, notes, real))
 }
 
 #[cfg(test)]

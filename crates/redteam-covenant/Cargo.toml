@@ -10,6 +10,7 @@ rust-version.workspace = true
 redteam-core.workspace = true
 silverscript-lang.workspace = true
 silverscript-abi.workspace = true
+silverscript-core.workspace = true
 kaspa-consensus.workspace = true
 kaspa-consensus-core.workspace = true
 kaspa-txscript.workspace = true

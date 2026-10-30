@@ -42,6 +42,9 @@ struct ScanArgs {
     /// Constructor values from a JSON file (the one you deploy with): {"name": value} or [values in order]. --arg wins.
     #[arg(long = "args", value_name = "FILE")]
     args_file: Option<PathBuf>,
+    /// Test this compiled script (from your own pinned compiler) instead of compiling the source: silverc JSON, any JSON with a `bytecode` hex, or a hex file. Give the .sil too, and --args with the values it was compiled with.
+    #[arg(long, value_name = "FILE")]
+    compiled: Option<PathBuf>,
     /// Honest transactions to attack, from your own harness (format: BASELINE.md). Repeatable.
     #[arg(long = "baseline", value_name = "FILE")]
     baselines: Vec<PathBuf>,
@@ -179,6 +182,7 @@ fn real_main() -> Result<ExitCode> {
 fn scan(a: &ScanArgs) -> Result<ExitCode> {
     let mut overrides = BTreeMap::new();
     let mut file_notes = Vec::new();
+    let mut real_values = BTreeMap::new();
     if let Some(path) = &a.args_file {
         let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         let mut sources = Vec::new();
@@ -188,13 +192,18 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
             sources.push(redteam_covenant::legacy::prepare(&name, &src)?.0);
         }
         let refs: Vec<&str> = sources.iter().map(String::as_str).collect();
-        let (vals, notes) = redteam_covenant::ctor_file::load(&raw, &refs).with_context(|| format!("{}", path.display()))?;
+        let (vals, notes, real) =
+            redteam_covenant::ctor_file::load_full(&raw, &refs).with_context(|| format!("{}", path.display()))?;
         overrides = vals;
         file_notes = notes;
+        real_values = real;
     }
     for kv in &a.args {
         let (k, v) = kv.split_once('=').with_context(|| format!("--arg {kv}: expected NAME=VALUE"))?;
         overrides.insert(k.trim().to_string(), v.trim().to_string());
+    }
+    if a.compiled.is_some() && a.files.len() != 1 {
+        bail!("--compiled needs exactly one .sil file next to it (the source of that script)");
     }
     if a.files.len() > 1 {
         return project(a, &overrides, file_notes);
@@ -210,7 +219,20 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
         Some(file) => {
             let source = std::fs::read_to_string(file).with_context(|| format!("read {}", file.display()))?;
             let (source, mut legacy) = redteam_covenant::legacy::prepare(&short(file), &source)?;
-            if a.no_tune {
+            if let Some(cpath) = &a.compiled {
+                let raw = std::fs::read(cpath).with_context(|| format!("read {}", cpath.display()))?;
+                let script = redteam_covenant::compiled::read_script(&raw).with_context(|| format!("{}", cpath.display()))?;
+                let mut c = redteam_covenant::contract::Contract::load(&short(file), &source, &overrides)?;
+                let notes = redteam_covenant::compiled::apply(&mut c, script, &real_values)
+                    .with_context(|| format!("{}", cpath.display()))?;
+                if a.args_file.is_none() && c.args.iter().any(|x| x.ty == "pubkey") {
+                    legacy.push("no --args file: the compiled script holds your real keys, which the tool cannot sign with, so signed paths stay unexplored. Give the constructor values it was compiled with (--args) and the tool swaps in test keys.".into());
+                }
+                let p = redteam_covenant::baseline::search_all(&c, &judge);
+                legacy.extend(notes);
+                legacy.extend(file_notes);
+                (c, p, legacy)
+            } else if a.no_tune {
                 let c = redteam_covenant::contract::Contract::load(&short(file), &source, &overrides)?;
                 let p = redteam_covenant::baseline::search_all(&c, &judge);
                 legacy.extend(file_notes);

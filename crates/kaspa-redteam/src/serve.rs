@@ -361,6 +361,18 @@ fn scan(body: &[u8], s: &Shared) -> Result<Value> {
     for a in &args {
         cmd.arg("--arg").arg(a);
     }
+    // A compiled script from the user's own compiler, tested instead of today's compile.
+    let compiled = req.get("compiled").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if !compiled.is_empty() {
+        if !project.is_empty() || source.trim().is_empty() {
+            anyhow::bail!("A compiled script goes with exactly one .sil file (its source).");
+        }
+        if compiled.len() > 512 * 1024 {
+            anyhow::bail!("The compiled file is over 512 KiB.");
+        }
+        std::fs::write(dir.join("compiled.json"), compiled)?;
+        cmd.arg("--compiled").arg("compiled.json");
+    }
     // Constructor values pasted as JSON (the file a project deploys with).
     let args_json = req.get("args_json").and_then(|v| v.as_str()).unwrap_or("").trim();
     if !args_json.is_empty() {

@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/redteam-core", "crates/redteam-covenant", "crates/redteam-node", "crates/kaspa-redteam"]
 
 [workspace.package]
-version = "0.4.3"
+version = "0.4.4"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/kasperolabs/kaspa-redteam"
@@ -17,6 +17,7 @@ redteam-node = { path = "crates/redteam-node" }
 # SilverScript compiler as a library: no external silverc binary needed.
 silverscript-lang = { git = "https://github.com/kaspanet/silverscript", rev = "15b7bc27680bdf0d83b294fbbfda55ecb59958ca" }
 silverscript-abi = { git = "https://github.com/kaspanet/silverscript", rev = "15b7bc27680bdf0d83b294fbbfda55ecb59958ca" }
+silverscript-core = { git = "https://github.com/kaspanet/silverscript", rev = "15b7bc27680bdf0d83b294fbbfda55ecb59958ca" }
 
 # rusty-kaspa crates, same versions silverscript is built against.
 kaspa-consensus = "2.1.0"

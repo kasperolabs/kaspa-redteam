@@ -42,6 +42,7 @@ kaspa-redteam vault.sil -v                     # every attack + the spend map
 kaspa-redteam vault.sil --arg owner=@alice     # choose constructor values
 kaspa-redteam vault.sil --arg cap=500000000    #   ints, 0xhex, true/false, @party
 kaspa-redteam vault.sil --args deploy.json     # constructor values from the JSON you deploy with
+kaspa-redteam vault.sil --args deploy.json --compiled build.json   # test your compiler's exact bytes
 kaspa-redteam vault.sil --no-tune              # keep default constructor values as they are
 kaspa-redteam vault.sil --deadline 60          # stop searching after 60 s, still attack and report what was found
 kaspa-redteam vault.sil --only sig,OUT-02      # packs or attack IDs
@@ -72,6 +73,18 @@ Exit codes: `0` clean, `1` findings, `2` error.
 ```
 
 The tool can only spend what it holds the secrets for, so a few values are played by the tool, and the report lists which: `pubkey` parameters become test keys of the same name (`@owner`), and a `byte[32]` used as a key, a key hash or a hash lock gets a test key or the hash of a test secret. Everything else is used exactly as given.
+
+### Your compiler's exact bytes
+
+If you build with a pinned SilverScript, test what you will deploy rather than today's compile of the source:
+
+```
+kaspa-redteam vault.sil --args deploy.json --compiled build.json
+```
+
+`--compiled` takes your compiler's JSON output (any JSON with a `bytecode`, `redeemScript` or `script` hex, top level or under the contract) or a plain hex file. The `.sil` is still needed: the tool reads its entries and parameters, and the hints its search uses, from the source. `--args` gives the values the script was compiled with.
+
+The bytes are used as they are, with one exception: keys, key hashes and hash locks the tool plays are 32-byte pushes, and it swaps each one for its own (same length, nothing else moves), so it can sign and reveal. The report gives the script's sha256, says whether today's compile is identical, and lists the swapped values. The tool refuses the file, instead of testing something else, when a value from `--args` is not in the script, when an entry's dispatch tag is missing, or when it cannot find the starting state. On the web page: "Compiled script (advanced)".
 
 ### Older SilverScript
 
