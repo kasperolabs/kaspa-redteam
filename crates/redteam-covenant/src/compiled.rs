@@ -132,6 +132,11 @@ pub fn apply(c: &mut Contract, script: Vec<u8>, real: &BTreeMap<String, String>)
         );
     }
 
+    // Verifying keys in the given script get the same test key as today's compile.
+    let (zk_swapped, zk_n) = crate::zk::swap_keys(&bytes);
+    bytes = zk_swapped;
+    c.zk_keys = zk_n;
+
     // Every entry's dispatch tag must be in the script, or the source does not describe these bytes.
     let abi = c.artifact.as_mut().ok_or_else(|| anyhow!("no compiled contract"))?;
     let (_, art) = abi.contracts.iter_mut().next().ok_or_else(|| anyhow!("no contract"))?;

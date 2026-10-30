@@ -1,0 +1,14 @@
+pragma silverscript ^0.1.0;
+
+// Pays out on a RISC Zero proof, FIXED: the journal is the recipient's key,
+// and the whole coin (less a fee) must go to that key.
+contract ZkPayout(byte[32] imageId, int maxFee) {
+    entry claim(byte[] journal, byte[] proof) {
+        r0.g16.verify(sha256(journal), proof, imageId);
+        require(journal.length == 32);
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(pubkey(byte[32](journal)))));
+        require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - maxFee);
+    }
+}

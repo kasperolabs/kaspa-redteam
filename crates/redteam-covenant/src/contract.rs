@@ -107,6 +107,9 @@ pub struct Contract {
     /// The source reads covenant ids or authorized outputs: sandbox coins get
     /// a covenant id and successor outputs are bound to it.
     pub cov_mode: bool,
+    /// Groth16 verifying keys in the script swapped for the tool's test key
+    /// (see `zk`): proof-checked paths become explorable with its test proof.
+    pub zk_keys: usize,
 }
 
 impl Contract {
@@ -201,6 +204,24 @@ impl Contract {
         if artifact.contracts.len() != 1 {
             bail!("expected exactly one contract in the file, found {}", artifact.contracts.len());
         }
+        // ZK verifying keys pushed by the script: swapped for the test key, in
+        // the sandbox only, so the test proof passes (see `zk`).
+        let zk_keys = {
+            let c = artifact.contracts.values_mut().next().unwrap();
+            let (swapped, n) = crate::zk::swap_keys(&c.compiled.bytecode);
+            if n > 0 {
+                let sp = c.compiled.state_span;
+                c.compiled.template_hash =
+                    silverscript_core::utils::template_hash(&swapped[..sp.offset], &swapped[sp.offset + sp.len..]);
+                c.compiled.bytecode = swapped;
+            }
+            n
+        };
+        // A proof that names its recipient (`ScriptPubKeyP2PK(pubkey(...journal...))`):
+        // the honest recipient is a party of its own, not the attacker.
+        if zk_keys > 0 && source.contains("ScriptPubKeyP2PK(pubkey(") {
+            wallets.party("recipient");
+        }
         let (contract_name, c) = artifact.contracts.iter().next().unwrap();
         let bytecode = c.compiled.bytecode.clone();
         if std::env::var_os("REDTEAM_DEBUG").is_some() {
@@ -277,6 +298,7 @@ impl Contract {
             msg_candidates,
             bytecode,
             artifact: Some(artifact.clone()),
+            zk_keys,
         })
     }
 
@@ -304,6 +326,7 @@ impl Contract {
             ctor_ints: vec![],
             has_covenant_decls: false,
             cov_mode: false,
+            zk_keys: 0,
         }
     }
 

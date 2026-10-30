@@ -1,5 +1,11 @@
 # Changelog
 
+## Tool 0.4.8 (library 0.3.2)
+
+- ZK covenants: the Groth16 verifying key a script pushes (RISC Zero's fixed key, or the contract's own) is swapped in the sandbox for a test key whose one test proof verifies for any public inputs. Proof arguments get that proof; journal arguments are laid out from the entry's own `journal.slice(a, b) == value` checks. Proof-checked paths become explorable; a report note says what this does and does not test. Version-1 transactions with a compute budget for the verification.
+- Covenant-declaration entries (`#[covenant...] function advance`) are searched with their function's body, so its hints apply.
+- `examples/zk_payout_FAIL.sil` and `_PASS.sil`.
+
 ## Tool 0.4.7 (library 0.3.2)
 
 - Every attack says how its situation comes about in real use ("a wallet sends the deposit twice", "someone watching the mempool copies the secret"). Findings carry it as `in_practice` (command line: "In practice:", web page: "How this happens in practice", finding files, JSON), and the attack library on the page lists it.

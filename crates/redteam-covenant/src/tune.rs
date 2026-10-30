@@ -42,9 +42,18 @@ fn mentions(line: &str, name: &str) -> bool {
 
 /// The source text of `entry name(...) { ... }`.
 pub(crate) fn entry_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
-    let start = source.match_indices("entry ").find(|(i, _)| {
-        let rest = &source[i + 6..];
-        rest.starts_with(name) && rest[name.len()..].trim_start().starts_with('(')
+    let find = |kw: &str, name: &str| {
+        source.match_indices(kw).find(|(i, _)| {
+            let rest = &source[i + kw.len()..];
+            rest.starts_with(name) && rest[name.len()..].trim_start().starts_with('(')
+        })
+    };
+    // A covenant declaration (`#[covenant...] function advance(...)`) compiles to an
+    // entry named `__covenant_entrypoint_..._advance`: its body is the function's.
+    let start = find("entry ", name).or_else(|| {
+        let short = name.strip_prefix("__covenant_entrypoint_")?;
+        let short = ["auth_", "cov_", "leader_", "delegate_"].iter().find_map(|p| short.strip_prefix(p)).unwrap_or(short);
+        find("function ", short)
     })?;
     let open = start.0 + source[start.0..].find('{')?;
     let mut depth = 0usize;

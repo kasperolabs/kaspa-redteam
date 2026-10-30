@@ -1,0 +1,11 @@
+pragma silverscript ^0.1.0;
+
+// Pays out on a RISC Zero proof, BROKEN: the proof says who is owed, but the
+// payout does not check the journal, so whoever submits a valid proof (or
+// copies one from the mempool) picks the recipient.
+contract ZkPayout(byte[32] imageId) {
+    entry claim(byte[] journal, byte[] proof) {
+        r0.g16.verify(sha256(journal), proof, imageId);
+        require(tx.inputs.length == 1);
+    }
+}

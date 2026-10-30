@@ -526,6 +526,33 @@ fn candidates(
         TypeArtifact::Byte => vec![v(ArtifactValue::Byte(0)), v(ArtifactValue::Byte(1))],
         TypeArtifact::Bytes => {
             let mut out: Vec<_> = Vec::new();
+            // A ZK covenant: the test proof for the proof argument, and journals
+            // that carry a party's key (the usual recipient field) for the journal.
+            if c.zk_keys > 0 {
+                let n = param.to_ascii_lowercase();
+                if n.contains("proof") || n.contains("seal") {
+                    out.push((ArgRecipe::Value(ArtifactValue::Bytes(crate::zk::test_proof())), Some("the tool's test proof".into())));
+                    return Ok(out);
+                }
+                if n.contains("journal") || n.contains("output") || n.contains("public") {
+                    // Laid out the way the entry slices it, from constructor and state values.
+                    let bytes_of = |name: &str| -> Option<Vec<u8>> {
+                        let from_arg = c.args.iter().find(|a| a.name == name).map(|a| a.value.clone());
+                        let from_state = c.initial_state.as_ref().and_then(|s| s.get(name).cloned());
+                        match from_arg.or(from_state)? {
+                            ArtifactValue::Bytes(b) => Some(b),
+                            _ => None,
+                        }
+                    };
+                    if let Some(j) = crate::zk::journal_from_source(body, param, &bytes_of) {
+                        out.push((ArgRecipe::Value(ArtifactValue::Bytes(j)), Some("a journal laid out as the entry reads it".into())));
+                    }
+                    let keys = if parties.is_empty() { vec![KeyRef::Attacker] } else { parties.clone() };
+                    for k in keys.iter().take(2) {
+                        out.push(v(ArtifactValue::Bytes(c.wallets.get(*k).xonly().to_vec())));
+                    }
+                }
+            }
             // A signature carried inside bytes (`sig(byte[65](witness))`):
             // the signature alone, or after a one-byte path selector.
             if c.source.contains("sig(byte[65](") {
@@ -727,6 +754,14 @@ fn output_candidates_for(
 ) -> Vec<Vec<OutputSpec>> {
     let body = entry.and_then(|e| crate::tune::entry_body(&c.source, e)).unwrap_or("");
     let mut out = pinned_shapes(c, body, cov_value + extra_value);
+    // A ZK payout to the key a journal names: the whole coin, less a fee, to
+    // the keys the journal candidates carry.
+    if c.zk_keys > 0 && body.contains("ScriptPubKeyP2PK(pubkey(") {
+        let keys: Vec<KeyRef> = if c.wallets.parties.is_empty() { vec![KeyRef::Attacker] } else { (0..c.wallets.parties.len().min(2)).map(KeyRef::Party).collect() };
+        for k in keys {
+            out.push(vec![OutputSpec::new((cov_value + extra_value).saturating_sub(BASE_FEE), Dest::Key(k))]);
+        }
+    }
     out.extend(generic_shapes(c, body, cov_value, extra_value, state));
     out
 }

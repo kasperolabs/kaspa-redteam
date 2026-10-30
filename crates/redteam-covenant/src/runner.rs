@@ -155,6 +155,12 @@ pub fn run_paths_timed(
             "covenant declarations (#[covenant]) are searched and attacked like entries; no attack targets the continuation rules themselves yet".into(),
         );
     }
+    if contract.zk_keys > 0 {
+        notes.push(format!(
+            "ZK: the script checks {} Groth16 proof(s). In the sandbox the tool swapped the verifying key for a test key of its own and used its test proof, so the paths could be spent. That tests everything around the proof (what it binds, replay, spending without one), not the circuit or whether the real key is the right one.",
+            contract.zk_keys
+        ));
+    }
     notes.push("judge: rusty-kaspa consensus validator 2.1.0 in process (mempool relay policy not applied)".into());
 
     RunReport {

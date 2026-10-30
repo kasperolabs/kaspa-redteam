@@ -323,9 +323,16 @@ impl Default for Judge {
 }
 
 fn commit_for(version: u16, sig_ops: u8) -> ComputeCommit {
+    commit_with_zk(version, sig_ops, 0)
+}
+
+/// `zk`: Groth16 verifications the script runs (about 14,000 budget units each).
+fn commit_with_zk(version: u16, sig_ops: u8, zk: usize) -> ComputeCommit {
     if ComputeCommit::version_expects_compute_budget_field(version) {
         // 10 budget units per signature operation (1000 grams / 100), plus room for the script.
-        ComputeCommit::ComputeBudget((sig_ops as u16).saturating_mul(10).saturating_add(100).into())
+        ComputeCommit::ComputeBudget(
+            (sig_ops as u16).saturating_mul(10).saturating_add(100).saturating_add((zk as u16).saturating_mul(15_000)).into(),
+        )
     } else {
         ComputeCommit::SigopCount(sig_ops.into())
     }
@@ -387,7 +394,8 @@ impl Judge {
         let wallets = &contract.wallets;
         // Covenant-aware contracts get real covenant identity: version 1, a
         // covenant id on every covenant coin, successor outputs bound to it.
-        let version = if contract.cov_mode { plan.version.max(1) } else { plan.version };
+        // Covenant ids and ZK verification need version-1 transactions (compute budget).
+        let version = if contract.cov_mode || contract.zk_keys > 0 { plan.version.max(1) } else { plan.version };
         let cov_id = contract.cov_mode.then(sandbox_covenant_id);
         let first_cov = plan.inputs.iter().position(|i| matches!(i, InputSpec::Covenant { .. }));
         let first_state = plan
@@ -410,7 +418,7 @@ impl Judge {
                         fresh,
                         vec![],
                         *sequence,
-                        commit_for(version, contract.sig_ops),
+                        commit_with_zk(version, contract.sig_ops, contract.zk_keys),
                     ));
                     entries.push(UtxoEntry::new(*value, pay_to_script_hash_script(&script), UTXO_DAA, false, cov_id));
                     redeems.push(Some(script));

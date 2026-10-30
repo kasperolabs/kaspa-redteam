@@ -21,6 +21,7 @@ pub mod sandbox;
 pub mod script;
 pub mod tune;
 pub mod wallets;
+pub mod zk;
 
 use baseline::PathStatus;
 use contract::Contract;
@@ -74,7 +75,11 @@ pub fn spend_map(c: &Contract, paths: &[PathStatus]) -> serde_json::Value {
                     } else if b.plan.has_resigned() {
                         "a user holding the baseline's listed key (the tool re-signs)".to_string()
                     } else if !b.secrets.is_empty() {
-                        format!("anyone who knows the secret behind {} (no transaction signature)", b.secrets.join(" + "))
+                        if b.secrets.iter().any(|s| s.contains("test proof")) {
+                            "anyone holding a valid proof, which every spend reveals (the tool used its test proof; no transaction signature)".to_string()
+                        } else {
+                            format!("anyone who knows the secret behind {} (no transaction signature)", b.secrets.join(" + "))
+                        }
                     } else {
                         "anyone, no signature".to_string()
                     };

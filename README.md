@@ -86,6 +86,12 @@ kaspa-redteam vault.sil --args deploy.json --compiled build.json
 
 The bytes are used as they are, with one exception: keys, key hashes and hash locks the tool plays are 32-byte pushes, and it swaps each one for its own (same length, nothing else moves), so it can sign and reveal. The report gives the script's sha256, says whether today's compile is identical, and lists the swapped values. The tool refuses the file, instead of testing something else, when a value from `--args` is not in the script, when an entry's dispatch tag is missing, or when it cannot find the starting state. On the web page: "Compiled script (advanced)".
 
+### ZK covenants
+
+A covenant that checks a Groth16 proof (`r0.g16.verify`, `g16.verify`) cannot be spent without one, and the tool cannot make a real proof; that is the point of the proof. So in the sandbox it swaps the verifying key the script pushes for a test key of its own, built so that its one test proof verifies for any public inputs (the same idea as a prover's dev mode). A `proof` argument gets that proof, and a `journal` argument is laid out the way the entry reads it: every `journal.slice(a, b) == value` check places that constructor or state value at its offset, and a slice returned into the next state keeps the current value.
+
+That tests everything around the proof: whether the covenant binds its outputs to what the journal says, whether a proof copied from the mempool can be reused with other outputs, whether value can move without one. It does not test the circuit, or whether the key in the script is the right one. The report says so in a note. `examples/zk_payout_FAIL.sil` pays whoever submits a valid proof (SEC-01: copy it from the mempool); `_PASS` binds the payout to the key the journal names.
+
 ### Older SilverScript
 
 The language still changes, and the tool compiles with the current SilverScript. A file that does not parse is reported as a syntax error, in those words. For the changes it knows, the tool tests the file rewritten in current syntax and says so in the report:
