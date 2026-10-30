@@ -96,6 +96,16 @@ pub struct Finding {
     pub fix_pattern: String,
     /// Everything needed to replay the finding. Engine specific.
     pub repro: serde_json::Value,
+    /// Where in the source the fix belongs, when the engine can tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<Location>,
+}
+
+/// A few source lines around the place a fix belongs; `line` is the one it is about.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Location {
+    pub line: usize,
+    pub lines: Vec<(usize, String)>,
 }
 
 /// What one attack run produced.

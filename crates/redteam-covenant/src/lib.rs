@@ -12,6 +12,7 @@ pub mod baseline;
 pub mod compiled;
 pub mod contract;
 pub mod family;
+pub mod locate;
 pub mod ctor_file;
 pub mod import;
 pub mod legacy;

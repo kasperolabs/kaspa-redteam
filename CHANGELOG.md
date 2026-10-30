@@ -1,5 +1,11 @@
 # Changelog
 
+## Tool 0.10.1 (library 0.8.0)
+
+- Findings show where in the source the fix belongs: the line of the entry that does (or should do) the check the attack got past, with a line either side (`location` in the JSON report).
+- The same hole on several paths is one finding: one card (web) or one entry (terminal) per attack and explanation, listing every path, each place in the source once with the paths that run through it, and every repro.
+- A new coin a covenant owns (an order's remainder) is no longer sent to the minted-coin step, which reported it as stuck.
+
 ## Tool 0.10.0 (library 0.8.0)
 
 - FAM-10: sweep coins sent to the covenant. A second coin of the token owned by the covenant's id (tokens sent to it by mistake, a second deposit) is spent next to the one the path uses, with the token program's follower entry, and its tokens go to the attacker. An ask order without a token input count check is caught; with `require(OpCovInputCount(tokenCovId) == 1)` it survives. The curve and the bridge survive it.

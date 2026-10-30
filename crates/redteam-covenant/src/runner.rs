@@ -233,6 +233,7 @@ fn judge_attempts(cx: &AttackCx, meta: &'static AttackMeta, list: Vec<Attempt>) 
                 fix_pattern: meta.fix_pattern.into(),
                 in_practice: meta.in_practice.into(),
                 repro: crate::replay::repro_json(cx.contract, &a, &b, fee),
+                location: crate::locate::locate(&cx.contract.source, &a.path, meta.id),
             });
         }
     }

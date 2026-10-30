@@ -72,7 +72,10 @@ pub fn render_terminal(r: &RunReport, style: &TermStyle, verbose: bool) -> Strin
         }
     }
 
-    for f in &findings {
+    // One entry per attack and explanation: the same hole on several paths is
+    // one problem, listed with every path, every place in the source and every repro.
+    for group in group_findings(&findings) {
+        let f = group[0];
         let _ = writeln!(o);
         let sev = match f.severity {
             crate::Severity::High => style.red("[HIGH]"),
@@ -80,12 +83,34 @@ pub fn render_terminal(r: &RunReport, style: &TermStyle, verbose: bool) -> Strin
             crate::Severity::Low => style.dim("[LOW] "),
         };
         let _ = writeln!(o, "{sev} {} {}", style.bold(&f.id), f.title);
-        let _ = writeln!(o, "  Path `{}`: {}", f.subject, f.explanation);
+        let paths: Vec<String> = group.iter().map(|g| format!("`{}`", g.subject)).collect();
+        let label = if paths.len() == 1 { "Path" } else { "Paths" };
+        let _ = writeln!(o, "  {label} {}: {}", paths.join(", "), f.explanation);
         if !f.in_practice.is_empty() {
             let _ = writeln!(o, "  In practice: {}", f.in_practice);
         }
-        if let Some(file) = f.repro.get("file").and_then(|v| v.as_str()) {
-            let _ = writeln!(o, "  Repro: {file}   replay: kaspa-redteam replay {file}");
+        let mut places: Vec<(usize, Vec<&str>, &crate::Location)> = Vec::new();
+        for g in &group {
+            if let Some(l) = &g.location {
+                match places.iter_mut().find(|p| p.0 == l.line) {
+                    Some(p) => p.1.push(&g.subject),
+                    None => places.push((l.line, vec![&g.subject], l)),
+                }
+            }
+        }
+        for (line, on, l) in &places {
+            let whose = if group.len() > 1 { format!(" ({})", on.join(", ")) } else { String::new() };
+            let _ = writeln!(o, "  Line {line}{whose}:");
+            for (n, text) in &l.lines {
+                let mark = if n == line { ">" } else { " " };
+                let _ = writeln!(o, "   {mark}{n:>5} | {text}");
+            }
+        }
+        for g in &group {
+            if let Some(file) = g.repro.get("file").and_then(|v| v.as_str()) {
+                let on = if group.len() > 1 { format!(" ({})", g.subject) } else { String::new() };
+                let _ = writeln!(o, "  Repro{on}: {file}   replay: kaspa-redteam replay {file}");
+            }
         }
         let _ = writeln!(o, "  Fix pattern: {}", f.fix_pattern);
     }
@@ -151,4 +176,16 @@ pub fn write_findings(r: &mut RunReport, dir: &Path) -> std::io::Result<Vec<Stri
         }
     }
     Ok(written)
+}
+
+/// Findings of one attack with the same explanation, in report order.
+pub fn group_findings<'a>(findings: &[&'a crate::Finding]) -> Vec<Vec<&'a crate::Finding>> {
+    let mut out: Vec<Vec<&crate::Finding>> = Vec::new();
+    for f in findings {
+        match out.iter_mut().find(|g| g[0].id == f.id && g[0].explanation == f.explanation) {
+            Some(g) => g.push(f),
+            None => out.push(vec![f]),
+        }
+    }
+    out
 }

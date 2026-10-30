@@ -178,6 +178,13 @@ h3.sec { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; colo
 .fix { background: var(--code-bg); border-radius: 6px; padding: 10px 12px; font: 13px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .fix::before { content: "fix pattern"; display: block; font: 600 10px var(--sans); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 4px; }
 .finding .dl { margin-top: 10px; }
+.where { margin: 0 0 12px; }
+.where .wl { font: 600 12px var(--sans); color: var(--muted); margin-bottom: 4px; }
+.where .wp { font: 400 12px var(--mono); margin-left: 6px; }
+.where pre { margin: 0; background: var(--code-bg); border-radius: 6px; padding: 8px 0; font: 13px/1.55 var(--mono); overflow-x: auto; }
+.where pre span { display: block; padding: 0 12px; white-space: pre; }
+.where pre span.hit { background: color-mix(in srgb, var(--red) 14%, transparent); }
+.where pre i { font-style: normal; color: var(--muted); display: inline-block; min-width: 3.2em; user-select: none; }
 
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -617,11 +624,14 @@ kaspa-redteam vault.sil -v</pre>
     const res = rep.results || [];
     const count = st => res.filter(x => x.outcome.status === st).length;
     const findings = res.flatMap(x => x.outcome.status === "found" ? x.outcome.findings : []);
+    // The same hole on several paths is one finding: one attack, one explanation.
+    const groups = [];
+    findings.forEach(f => { const g = groups.find(x => x[0].id === f.id && x[0].explanation === f.explanation); if (g) g.push(f); else groups.push([f]); });
     const map = (rep.context && rep.context.spend_map) || [];
     const unexplored = map.filter(m => !m.explored).length;
     const run = res.length - count("skipped");
     let cls = "", title, sub;
-    if (findings.length) { cls = "bad"; title = `${findings.length} finding${findings.length > 1 ? "s" : ""}`; sub = "Consensus accepted hostile transactions. Details below."; }
+    if (findings.length) { cls = "bad"; title = `${groups.length} finding${groups.length > 1 ? "s" : ""}`; sub = "Consensus accepted hostile transactions. Details below."; }
     else if (run === 0) { cls = "partial"; title = "Nothing could be attacked"; sub = "No path was spent honestly, so no attack applied. See the notes."; }
     else if (unexplored) { cls = "partial"; title = "Survived, with gaps"; sub = `Every attack that ran was rejected, but ${unexplored} path${unexplored > 1 ? "s were" : " was"} not explored.`; }
     else { title = "Survived every attack"; sub = "Every hostile transaction was rejected on every path."; }
@@ -636,25 +646,39 @@ kaspa-redteam vault.sil -v</pre>
         <div><b>${run}</b><span>attacks run</span></div>
         <div><b>${count("survived")}</b><span>survived</span></div>
         <div><b>${count("skipped")}</b><span>skipped</span></div>
-        <div><b style="color:${findings.length ? "var(--red)" : "inherit"}">${findings.length}</b><span>findings</span></div>
+        <div><b style="color:${findings.length ? "var(--red)" : "inherit"}">${groups.length}</b><span>findings</span></div>
       </div>
       <div class="dl"><button class="linkbtn" data-report="${k}">Download this report (JSON)</button></div>
       ${unexplored ? `<div class="nudge">Unexplored paths often need real values: an amount, a limit, a fee script, a token hash. <button class="linkbtn" data-ctor="1">Set constructor values</button> and run again.</div>` : ""}
       ${project ? "" : nudge()}
     </div>`;
 
-    if (findings.length) {
+    if (groups.length) {
       h += `<h3 class="sec">Findings</h3>`;
-      findings.forEach(f => {
-        const want = String((f.repro && f.repro.file) || "").replace(/^.*?findings\//, "");
-        const i = files.findIndex(x => x.name === want || x.name.split("/").pop() === want);
-        const file = files[i];
+      groups.forEach(g => {
+        const f = g[0], many = g.length > 1;
+        // Each place in the source once, with the paths that run through it.
+        const places = [];
+        g.forEach(x => {
+          if (!x.location) return;
+          const p = places.find(q => q.loc.line === x.location.line);
+          if (p) p.paths.push(x.subject); else places.push({ loc: x.location, paths: [x.subject] });
+        });
+        const where = places.map(p => `<div class="where"><div class="wl">Line ${p.loc.line}${many ? ` <span class="wp">${p.paths.map(esc).join(", ")}</span>` : ""}</div><pre>${
+          p.loc.lines.map(([n, t]) => `<span class="${n === p.loc.line ? "hit" : ""}"><i>${n}</i>${esc(t)}</span>`).join("")}</pre></div>`).join("");
+        const repros = g.map(x => {
+          const want = String((x.repro && x.repro.file) || "").replace(/^.*?findings\//, "");
+          const i = files.findIndex(y => y.name === want || y.name.split("/").pop() === want);
+          const file = files[i];
+          return file ? `<div class="dl"><button class="linkbtn" data-file="${i}">Download the repro${many ? ` for ${esc(x.subject)}` : ""} (${esc(file.name)})</button><span class="hint" style="margin:0">replay: <code>kaspa-redteam replay ${esc(file.name.split("/").pop())}</code></span></div>` : "";
+        }).join("");
         h += `<div class="card finding">
-          <div class="fhead"><span class="sev ${esc(f.severity)}">${esc(f.severity)}</span><span class="fid">${esc(f.id)}</span><span class="ftitle">${esc(f.title)}</span><span class="fpath">path ${esc(f.subject)}</span></div>
+          <div class="fhead"><span class="sev ${esc(f.severity)}">${esc(f.severity)}</span><span class="fid">${esc(f.id)}</span><span class="ftitle">${esc(f.title)}</span><span class="fpath">${many ? `${g.length} paths: ` : "path "}${g.map(x => esc(x.subject)).join(", ")}</span></div>
           <p>${esc(f.explanation.charAt(0).toUpperCase() + f.explanation.slice(1))}</p>
           ${f.in_practice ? `<p class="prac"><b>How this happens in practice.</b> ${esc(f.in_practice)}</p>` : ""}
+          ${where}
           <div class="fix">${esc(f.fix_pattern)}</div>
-          ${file ? `<div class="dl"><button class="linkbtn" data-file="${i}">Download the repro (${esc(file.name)})</button><span class="hint" style="margin:0">replay: <code>kaspa-redteam replay ${esc(file.name.split("/").pop())}</code></span></div>` : ""}
+          ${repros}
         </div>`;
       });
     }

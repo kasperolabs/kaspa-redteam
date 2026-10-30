@@ -1085,6 +1085,11 @@ fn explore_seeded(
                             if decode_state(&p.contract, r).is_some_and(|st| st.values().any(|v| *v == ArtifactValue::Bytes(attacker.clone()))) {
                                 continue;
                             }
+                            // A coin a covenant owns (an order's remainder) moves only with that covenant.
+                            let main_id = crate::sandbox::sandbox_covenant_id().as_bytes().to_vec();
+                            if decode_state(&p.contract, r).is_some_and(|st| st.values().any(|v| *v == ArtifactValue::Bytes(main_id.clone()))) {
+                                continue;
+                            }
                             notes.push(format!("minted: {}|{}|{entry}+{}|{k}", p.file, faster_hex::hex_string(r), sib_entry.name));
                         }
                     }
