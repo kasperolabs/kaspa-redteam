@@ -91,9 +91,7 @@ enum Cmd {
         args: Vec<String>,
     },
     /// The constructor parameters of each file, with the values the tool would use (JSON)
-    Params {
-        files: Vec<PathBuf>,
-    },
+    Params { files: Vec<PathBuf> },
     /// List the attack library
     List {
         #[arg(long)]
@@ -115,6 +113,9 @@ enum Cmd {
         /// Worker threads per scan
         #[arg(long, default_value_t = 4)]
         threads: usize,
+        /// Append one line per scan to this file: time, an anonymous visitor tag, file names, verdict. Never the code.
+        #[arg(long, env = "REDTEAM_USAGE_LOG")]
+        usage_log: Option<std::path::PathBuf>,
     },
     /// Node and mining attacks on local simnet kaspad processes (never mainnet)
     Node {
@@ -148,8 +149,15 @@ fn real_main() -> Result<ExitCode> {
         Some(Cmd::Replay { files }) => replay(&files),
         Some(Cmd::List { json }) => list(json),
         Some(Cmd::Params { files }) => params(&files),
-        Some(Cmd::Serve { bind, port, jobs, timeout, threads }) => {
-            serve::serve(serve::ServeOptions { bind, port, jobs: jobs.max(1), timeout, threads: threads.max(1) })?;
+        Some(Cmd::Serve { bind, port, jobs, timeout, threads, usage_log }) => {
+            serve::serve(serve::ServeOptions {
+                bind,
+                port,
+                jobs: jobs.max(1),
+                timeout,
+                threads: threads.max(1),
+                usage_log,
+            })?;
             Ok(ExitCode::SUCCESS)
         }
         Some(Cmd::Export { file, args }) => {
@@ -226,7 +234,8 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
             let (source, mut legacy) = redteam_covenant::legacy::prepare(&short(file), &source)?;
             if let Some(cpath) = &a.compiled {
                 let raw = std::fs::read(cpath).with_context(|| format!("read {}", cpath.display()))?;
-                let script = redteam_covenant::compiled::read_script(&raw).with_context(|| format!("{}", cpath.display()))?;
+                let script =
+                    redteam_covenant::compiled::read_script(&raw).with_context(|| format!("{}", cpath.display()))?;
                 let mut c = redteam_covenant::contract::Contract::load(&short(file), &source, &overrides)?;
                 let notes = redteam_covenant::compiled::apply(&mut c, script, &real_values)
                     .with_context(|| format!("{}", cpath.display()))?;
@@ -251,7 +260,9 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
                     names.iter().filter(|n| !p.iter().any(|x| x.name == **n && x.baseline.is_some())).count()
                 };
                 if gaps(&t.paths) > 0 {
-                    if let Some((zov, zeroed)) = redteam_covenant::tune::zero_overrides(&t.contract, &overrides, &Default::default()) {
+                    if let Some((zov, zeroed)) =
+                        redteam_covenant::tune::zero_overrides(&t.contract, &overrides, &Default::default())
+                    {
                         if let Ok(mut z) = redteam_covenant::tune::tune(&short(file), &source, &zov, &judge) {
                             if gaps(&z.paths) < gaps(&t.paths) {
                                 z.notes.push(format!(
@@ -345,7 +356,11 @@ fn project(a: &ScanArgs, overrides: &BTreeMap<String, String>, file_notes: Vec<S
             started.elapsed().as_secs_f64()
         );
         for l in &links {
-            let what = match l.kind { "address" => "pays to the address of", "covenant id" => "is the covenant id of the coins of", _ => "pins the program of" };
+            let what = match l.kind {
+                "address" => "pays to the address of",
+                "covenant id" => "is the covenant id of the coins of",
+                _ => "pins the program of",
+            };
             println!("  {} `{}` {} {}", l.from, l.via, what, l.to);
         }
         if links.is_empty() {

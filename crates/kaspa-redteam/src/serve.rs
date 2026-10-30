@@ -4,7 +4,9 @@
 //! Every scan runs as a separate child process of this same binary (the
 //! ordinary `kaspa-redteam <file> --json` command) in a fresh temporary folder,
 //! with a wall-clock limit and a memory limit, and the folder is deleted when
-//! it ends. Uploaded contracts are never kept, logged or sent anywhere.
+//! it ends. Uploaded contracts are never kept, logged or sent anywhere. With
+//! `--usage-log` the server appends one line per scan (time, an anonymous
+//! visitor tag, the file names, the verdict); never the code.
 
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
@@ -94,6 +96,8 @@ pub struct ServeOptions {
     pub timeout: u64,
     /// Worker threads per scan.
     pub threads: usize,
+    /// Append one line per scan here (no source code).
+    pub usage_log: Option<PathBuf>,
 }
 
 struct Shared {
@@ -101,6 +105,8 @@ struct Shared {
     running: Mutex<Vec<IpAddr>>,
     counter: AtomicU64,
     exe: PathBuf,
+    /// Salts the visitor tag; lives only in memory, so tags cannot be linked across restarts.
+    salt: std::collections::hash_map::RandomState,
 }
 
 pub fn serve(opts: ServeOptions) -> Result<()> {
@@ -111,7 +117,11 @@ pub fn serve(opts: ServeOptions) -> Result<()> {
         "kaspa-redteam web page on http://{addr}  ({} scan(s) at once, {} s limit each)",
         opts.jobs, opts.timeout
     );
-    let shared = Arc::new(Shared { opts, running: Mutex::new(Vec::new()), counter: AtomicU64::new(0), exe });
+    if let Some(p) = &opts.usage_log {
+        eprintln!("usage log: {}", p.display());
+    }
+    let salt = std::collections::hash_map::RandomState::new();
+    let shared = Arc::new(Shared { opts, running: Mutex::new(Vec::new()), counter: AtomicU64::new(0), exe, salt });
     for req in server.incoming_requests() {
         let shared = shared.clone();
         std::thread::spawn(move || handle(req, &shared));
@@ -182,7 +192,13 @@ fn handle(mut req: tiny_http::Request, s: &Shared) {
     match (&method, url.as_str()) {
         (&tiny_http::Method::Get, "/") | (&tiny_http::Method::Get, "/index.html") => {
             // Link previews need absolute URLs: build them from the host the page was asked for.
-            let page = PAGE.replace("%ORIGIN%", &origin(&req));
+            let mut page = PAGE.replace("%ORIGIN%", &origin(&req));
+            if s.opts.usage_log.is_some() {
+                page = page.replace(
+                    "The file is deleted when the run ends; nothing is kept.",
+                    "The file is deleted when the run ends. The server keeps one line per run (file names and the result), never the code.",
+                );
+            }
             respond(req, 200, "text/html; charset=utf-8", page)
         }
         (&tiny_http::Method::Get, "/og.png") => {
@@ -268,8 +284,12 @@ fn handle(mut req: tiny_http::Request, s: &Shared) {
                 }
                 running.push(ip);
             }
+            let started = Instant::now();
             let result = scan(&body, s);
             s.running.lock().unwrap().retain(|x| *x != ip);
+            if let Some(path) = &s.opts.usage_log {
+                usage_line(path, s, ip, &body, &result, started.elapsed());
+            }
             match result {
                 Ok(v) => respond_json(req, 200, &v),
                 Err(e) => respond_json(req, 400, &json!({ "error": format!("{e:#}") })),
@@ -277,6 +297,106 @@ fn handle(mut req: tiny_http::Request, s: &Shared) {
         }
         _ => respond(req, 404, "text/plain", "not found"),
     }
+}
+
+/// One line per scan: when, an anonymous visitor tag, which files, what came out.
+/// Best effort: a log that cannot be written never fails a scan.
+fn usage_line(path: &Path, s: &Shared, ip: IpAddr, body: &[u8], result: &Result<Value>, took: Duration) {
+    use std::hash::{BuildHasher, Hash, Hasher};
+    use std::io::Write;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let mut h = s.salt.build_hasher();
+    (ip, now / 86_400).hash(&mut h);
+    let visitor = format!("{:04x}", h.finish() & 0xffff);
+
+    let req: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let given = |f: &Value| f.get("source").and_then(|v| v.as_str()).is_some_and(|x| !x.trim().is_empty());
+    let named = |f: &Value| safe_name(f.get("filename").and_then(|v| v.as_str()).unwrap_or(""), ".sil", "contract.sil");
+    let mut names: Vec<String> = req
+        .get("files")
+        .and_then(|v| v.as_array())
+        .map(|l| l.iter().filter(|f| given(f)).map(named).collect())
+        .unwrap_or_default();
+    if names.is_empty() && given(&req) {
+        names.push(named(&req));
+    }
+    if names.is_empty() {
+        names.push("baseline".into());
+    }
+
+    let tail = match result {
+        Err(_) => "verdict=error".to_string(),
+        Ok(v) => {
+            let reps: Vec<&Value> = match v.pointer("/report/reports").and_then(|r| r.as_array()) {
+                Some(list) => list.iter().collect(),
+                None => v.get("report").into_iter().collect(),
+            };
+            let (mut attacks, mut findings, mut gaps) = (0usize, 0usize, 0usize);
+            for r in reps {
+                let res = r.get("results").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+                let status =
+                    |x: &Value| x.pointer("/outcome/status").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                let run = res.iter().filter(|x| status(x) != "skipped").count();
+                attacks += run;
+                // Counted as the page counts them: one finding per attack and explanation.
+                let mut seen = std::collections::BTreeSet::new();
+                for x in res.iter().filter(|x| status(x) == "found") {
+                    for f in x.pointer("/outcome/findings").and_then(|f| f.as_array()).into_iter().flatten() {
+                        seen.insert((f.get("id").map(|i| i.to_string()), f.get("explanation").map(|e| e.to_string())));
+                    }
+                }
+                findings += seen.len();
+                // A file spent only inside another contract's path is judged with that contract.
+                let part_of = r.get("notes").and_then(|n| n.as_array()).is_some_and(|n| {
+                    n.iter().any(|t| {
+                        t.as_str().is_some_and(|t| t.contains("of this file was spent and attacked as part of"))
+                    })
+                });
+                if !(run == 0 && part_of) {
+                    gaps += r
+                        .pointer("/context/spend_map")
+                        .and_then(|m| m.as_array())
+                        .map(|m| m.iter().filter(|p| p.get("explored") != Some(&Value::Bool(true))).count())
+                        .unwrap_or(0);
+                }
+            }
+            let verdict = if findings > 0 {
+                "findings"
+            } else if attacks == 0 {
+                "untested"
+            } else if gaps > 0 {
+                "gaps"
+            } else {
+                "passed"
+            };
+            format!("verdict={verdict} attacks={attacks} findings={findings} unexplored={gaps}")
+        }
+    };
+    let line = format!(
+        "{}  visitor={visitor}  files={}  contracts={}  {tail}  secs={:.1}\n",
+        utc(now),
+        names.len(),
+        names.join(","),
+        took.as_secs_f64()
+    );
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// `2026-10-30T19:36:02Z` from seconds since 1970 (civil from days, no time crate).
+fn utc(secs: u64) -> String {
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
 /// `name.sil`, letters, digits, `-_.` only.

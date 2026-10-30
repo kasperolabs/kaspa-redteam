@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/redteam-core", "crates/redteam-covenant", "crates/redteam-node", "crates/kaspa-redteam"]
 
 [workspace.package]
-version = "0.14.1"
+version = "0.14.2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/kasperolabs/kaspa-redteam"
@@ -42,6 +42,6 @@ anyhow = "1"
 borsh = "1"
 rayon = "1"
 thiserror = "1"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 rand = "0.8.5"
 rand_chacha = "0.3"

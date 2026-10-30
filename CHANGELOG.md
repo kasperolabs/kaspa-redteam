@@ -1,5 +1,9 @@
 # Changelog
 
+## Tool 0.14.2 (library 0.9.0)
+
+- `serve --usage-log <file>` (or `REDTEAM_USAGE_LOG`): one line per scan with the time, an anonymous visitor tag, the uploaded file names, the verdict (passed, gaps, untested, findings, error), the attack and finding counts and the run time. Never the code. The visitor tag is a hash of the address with a salt held only in memory and changed daily, so it tells one visitor's runs apart from another's on the same day and nothing more. Off by default; when it is on, the page's privacy line says so.
+
 ## Tool 0.14.1 (library 0.9.0)
 
 - A clean result now reads as a pass. When attacks ran, none got through and every path was explored, the web page shows a green PASSED badge: "Nothing we tried broke it", with a line saying it is a pass on this review, not an audit or a guarantee. The terminal prints `PASSED: 0 FINDINGS` in green.

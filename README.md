@@ -146,7 +146,13 @@ kaspa-redteam serve --port 8790 --jobs 2 --timeout 120 --threads 4
 
 A single page where anyone can drop a `.sil` file (or several that work together, tested as one project), or paste one,, optionally add constructor values or a baseline file, and get the same report the command line gives: verdict, findings with fix patterns, the spend map, every attack's result, and the repro files to download. The page is built into the binary; there is nothing else to install.
 
-Every scan runs as a separate child process of the same binary, in a fresh temporary folder that is deleted when it ends. Limits: the search stops at two thirds of `--timeout` (`--deadline`) so the attacks still run and a report always comes back, and the scan is killed at `--timeout` seconds (default 120), 2 GiB of memory, `--threads` worker threads per scan, one running scan per visitor and `--jobs` scans at once (others are told to try again). Uploads are capped at 1 MiB in total, 256 KiB and 8 files per scan. Nothing is logged or kept.
+Every scan runs as a separate child process of the same binary, in a fresh temporary folder that is deleted when it ends. Limits: the search stops at two thirds of `--timeout` (`--deadline`) so the attacks still run and a report always comes back, and the scan is killed at `--timeout` seconds (default 120), 2 GiB of memory, `--threads` worker threads per scan, one running scan per visitor and `--jobs` scans at once (others are told to try again). Uploads are capped at 1 MiB in total, 256 KiB and 8 files per scan. Nothing is logged or kept, unless the operator passes `--usage-log <file>` (or sets `REDTEAM_USAGE_LOG`): then the server appends one line per scan with the time, an anonymous visitor tag, the uploaded file names and the result, never the code, and the page's privacy line says so:
+
+```
+2026-10-30T23:39:41Z  visitor=09ba  files=3  contracts=BridgeMint.sil,KCC20.sil,bridge.sil  verdict=passed attacks=26 findings=0 unexplored=0  secs=40.0
+```
+
+The visitor tag is a hash of the address, salted per day with a value that lives only in the server's memory.
 
 It listens on `127.0.0.1` by default. For a public site, put a reverse proxy in front; the server reads the visitor's address from `X-Real-IP` or `X-Forwarded-For` when the request comes from the same machine. nginx:
 
