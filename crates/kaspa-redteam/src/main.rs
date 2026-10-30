@@ -243,7 +243,26 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
                 legacy.extend(file_notes);
                 (c, p, legacy)
             } else {
-                let t = redteam_covenant::tune::tune(&short(file), &source, &overrides, &judge)?;
+                let mut t = redteam_covenant::tune::tune(&short(file), &source, &overrides, &judge)?;
+                // Unexplored with the tool's default numbers: once more with the
+                // feature switches the user did not set at 0 (see tune::zero_overrides).
+                let gaps = |p: &[redteam_covenant::baseline::PathStatus]| {
+                    let names: std::collections::BTreeSet<&str> = p.iter().map(|x| x.name.as_str()).collect();
+                    names.iter().filter(|n| !p.iter().any(|x| x.name == **n && x.baseline.is_some())).count()
+                };
+                if gaps(&t.paths) > 0 {
+                    if let Some((zov, zeroed)) = redteam_covenant::tune::zero_overrides(&t.contract, &overrides, &Default::default()) {
+                        if let Ok(mut z) = redteam_covenant::tune::tune(&short(file), &source, &zov, &judge) {
+                            if gaps(&z.paths) < gaps(&t.paths) {
+                                z.notes.push(format!(
+                                    "constructor values: with the tool's defaults some paths could not be spent, so the numbers that switch a feature on (compared with 0 or with the clock) and that you did not set were tried at 0, feature off: {}. Every other number kept the tool's default. Set them yourself to test other settings.",
+                                    zeroed.join(", ")
+                                ));
+                                t = z;
+                            }
+                        }
+                    }
+                }
                 legacy.extend(file_notes);
                 legacy.extend(t.notes);
                 (t.contract, t.paths, legacy)

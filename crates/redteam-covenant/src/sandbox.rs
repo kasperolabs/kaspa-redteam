@@ -832,13 +832,24 @@ pub fn trace_failure(b: &Built, input: usize) -> Option<FailedCheck> {
         }
     }
     let (last_op, last_stack) = parse(lines.last()?);
-    let (op, stack) = if last_op.ends_with("Verify") && last_op != "OpVerify" {
+    let (mut op, mut stack) = if last_op.ends_with("Verify") && last_op != "OpVerify" {
         (last_op, last_stack)
     } else if lines.len() >= 2 {
         parse(lines[lines.len() - 2])
     } else {
         return None;
     };
+    // `require(a >= b || !flag)` fails on the `||`: the comparison that made
+    // its left side false is the one to look at.
+    if op == "OpBoolOr" && lines.len() >= 3 {
+        const CMP: [&str; 7] =
+            ["OpGreaterThanOrEqual", "OpGreaterThan", "OpLessThan", "OpLessThanOrEqual", "OpNumEqual", "OpEqual", "OpNumNotEqual"];
+        if let Some(l) = lines[..lines.len() - 2].iter().rev().take(24).find(|l| CMP.contains(&parse(l).0.as_str())) {
+            let (o, st) = parse(l);
+            op = o;
+            stack = st;
+        }
+    }
     if stack.len() < 2 {
         return None;
     }

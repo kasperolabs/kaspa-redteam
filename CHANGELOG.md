@@ -1,5 +1,12 @@
 # Changelog
 
+## Tool 0.14.0 (library 0.9.0)
+
+- Smarter defaults: when a path stays unexplored with the tool's default numbers, the run is tried once more with the feature switches the user did not set at 0 ("off"): numbers the source compares with 0 or with the clock (`if (interval > 0)`, `maxFill == 0 || ...`, `slope != 0`, `tif == TIF_GTC`, `tx.daa >= activeFrom`). Prices, amounts and anything the source requires to be positive outside such a switch keep their defaults. The second run is kept only if it explores more, and the report says which values were set to 0. A two-sided order book (bid, ask, token) is now fully explored with no values given.
+- A failed `require(a >= b || !flag)` is read through its left comparison, so the number in it can be repaired.
+- Arguments that index inputs or outputs are never repaired as amounts; a number passed as fixed bytes is matched first.
+- Web page: a covenant-id link reads "is the covenant id of the coins of", not "pins the program of".
+
 ## Tool 0.13.1 (library 0.9.0)
 
 - Under a deadline (the web page), every path still gets its first 512 search tries, and a follower entry its first 512 pairing tries, even when the time is already used up. Easy paths (a signed transfer, its delegate) are found in a handful; on a slower server the last file of a project lost them (`transfer_delegator` unexplored).

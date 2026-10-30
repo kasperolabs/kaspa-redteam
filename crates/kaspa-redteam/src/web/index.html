@@ -740,7 +740,7 @@ kaspa-redteam vault.sil -v</pre>
       <h2>Project: ${reps.length} contracts, ${total} finding${total === 1 ? "" : "s"}</h2>
       <div class="sub">${esc(((proj.project && proj.project.files) || []).join(" · "))}</div>
       <p style="margin:12px 0 6px">How the contracts refer to each other, as the tool understood it:</p>
-      <ul class="notes" style="padding:0 0 0 20px">${links.length ? links.map(l => `<li><b>${esc(l.from)}</b> <code>${esc(l.via)}</code> ${l.kind === "address" ? "pays to the address of" : "pins the program of"} <b>${esc(l.to)}</b></li>`).join("") : "<li>no links found; each contract was attacked on its own</li>"}</ul>
+      <ul class="notes" style="padding:0 0 0 20px">${links.length ? links.map(l => `<li><b>${esc(l.from)}</b> <code>${esc(l.via)}</code> ${l.kind === "address" ? "pays to the address of" : l.kind === "covenant id" ? "is the covenant id of the coins of" : "pins the program of"} <b>${esc(l.to)}</b></li>`).join("") : "<li>no links found; each contract was attacked on its own</li>"}</ul>
       <p style="margin:12px 0 6px">Each contract:</p>
       <ul class="notes" style="padding:0 0 0 20px">${reps.map(line).join("")}</ul>
     </div>`;

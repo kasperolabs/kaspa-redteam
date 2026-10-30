@@ -318,45 +318,26 @@ pub fn run(
         );
         let ov = overrides_for(&f.source, overrides)?;
         let mut t = crate::tune::tune_linked(&f.name, &f.source, &ov, l, judge)?;
-        // Paths no single-program spend could open: try them together with a
-        // coin of another program of the project (a bridge with its mint authority).
-        let mut family_notes = Vec::new();
-        if files.len() > 1 {
-            let programs: Vec<crate::family::Program> = files
-                .iter()
-                .zip(per_file.iter())
-                .filter(|(g, _)| g.name != f.name)
-                .filter_map(|(g, gl)| {
-                    let gov = overrides_for(&g.source, overrides).ok()?;
-                    let c = Contract::load_linked(&g.name, &g.source, &gov, gl).ok()?;
-                    Some(crate::family::Program { file: g.name.clone(), contract: c, cov_id: crate::family::family_id(&g.name) })
-                })
-                .collect();
-            let names: Vec<String> = {
-                let mut seen = std::collections::BTreeSet::new();
-                t.paths.iter().map(|p| p.name.clone()).filter(|n| seen.insert(n.clone())).collect()
-            };
-            for name in names {
-                // Not gated on the search deadline: a family attempt is a handful of
-                // runs, and it is the one way into these paths.
-                let found = crate::family::explore(&t.contract, &name, &programs, judge)
-                    .or_else(|| crate::family::explore_genesis(&t.contract, &name, &programs, judge))
-                    .or_else(|| crate::family::explore_owned(&t.contract, &name, &programs, judge));
-                // The entry's other branches, each its own path.
-                for (status, notes) in crate::family::explore_branches(&t.contract, &name, &programs, judge) {
-                    if !t.paths.iter().any(|p| p.entry == status.entry) {
-                        t.paths.push(status);
-                        family_notes.extend(notes);
+        let mut family_notes = family_pass(&mut t, f, files, &per_file, overrides, judge);
+        // Paths still unexplored with the tool's default numbers: once more with
+        // every number the user did not set at 0 (optional features off), except
+        // those the source requires to be positive. Kept only if it explores more.
+        if unexplored(&t.paths) > 0 {
+            let z = crate::tune::zero_overrides(&t.contract, &ov, l);
+            if std::env::var_os("REDTEAM_DEBUG").is_some() {
+                eprintln!("zero defaults for {}: {:?}", f.name, z.as_ref().map(|x| &x.1));
+            }
+            if let Some((zov, zeroed)) = z {
+                if let Ok(mut z) = crate::tune::tune_linked(&f.name, &f.source, &zov, l, judge) {
+                    let zn = family_pass(&mut z, f, files, &per_file, overrides, judge);
+                    if unexplored(&z.paths) < unexplored(&t.paths) {
+                        z.notes.push(format!(
+                            "constructor values: with the tool's defaults some paths could not be spent, so the numbers that switch a feature on (compared with 0 or with the clock) and that you did not set were tried at 0, feature off: {}. Every other number kept the tool's default. Set them yourself to test other settings.",
+                            zeroed.join(", ")
+                        ));
+                        t = z;
+                        family_notes = zn;
                     }
-                }
-                if let Some((status, notes)) = found {
-                    // A path no single-program spend opened is replaced; an explored
-                    // one gains its family variant (a mint next to a heartbeat).
-                    match t.paths.iter().position(|p| p.name == name && p.baseline.is_none()) {
-                        Some(k) => t.paths[k] = status,
-                        None => t.paths.push(status),
-                    }
-                    family_notes.extend(notes);
                 }
             }
         }
@@ -580,4 +561,64 @@ fn is_token_program(c: &Contract) -> bool {
             && crate::tune::entry_body(&c.source, &e.name).is_some_and(|b| b.contains("!= this.activeInputIndex"))
     });
     leader && follower
+}
+
+/// Paths no single-program spend could open: tried together with a coin of
+/// another program of the project (a bridge with its mint authority).
+fn family_pass(
+    t: &mut crate::tune::Tuned,
+    f: &ProjectFile,
+    files: &[ProjectFile],
+    per_file: &[Links],
+    overrides: &BTreeMap<String, String>,
+    judge: &Judge,
+) -> Vec<String> {
+    let mut family_notes = Vec::new();
+    if files.len() < 2 {
+        return family_notes;
+    }
+    let programs: Vec<crate::family::Program> = files
+        .iter()
+        .zip(per_file.iter())
+        .filter(|(g, _)| g.name != f.name)
+        .filter_map(|(g, gl)| {
+            let gov = overrides_for(&g.source, overrides).ok()?;
+            let c = Contract::load_linked(&g.name, &g.source, &gov, gl).ok()?;
+            Some(crate::family::Program { file: g.name.clone(), contract: c, cov_id: crate::family::family_id(&g.name) })
+        })
+        .collect();
+    let names: Vec<String> = {
+        let mut seen = std::collections::BTreeSet::new();
+        t.paths.iter().map(|p| p.name.clone()).filter(|n| seen.insert(n.clone())).collect()
+    };
+    for name in names {
+        // Not gated on the search deadline: a family attempt is a handful of
+        // runs, and it is the one way into these paths.
+        let found = crate::family::explore(&t.contract, &name, &programs, judge)
+            .or_else(|| crate::family::explore_genesis(&t.contract, &name, &programs, judge))
+            .or_else(|| crate::family::explore_owned(&t.contract, &name, &programs, judge));
+        // The entry's other branches, each its own path.
+        for (status, notes) in crate::family::explore_branches(&t.contract, &name, &programs, judge) {
+            if !t.paths.iter().any(|p| p.entry == status.entry) {
+                t.paths.push(status);
+                family_notes.extend(notes);
+            }
+        }
+        if let Some((status, notes)) = found {
+            // A path no single-program spend opened is replaced; an explored
+            // one gains its family variant (a mint next to a heartbeat).
+            match t.paths.iter().position(|p| p.name == name && p.baseline.is_none()) {
+                Some(k) => t.paths[k] = status,
+                None => t.paths.push(status),
+            }
+            family_notes.extend(notes);
+        }
+    }
+    family_notes
+}
+
+/// Entries with no explored path (each counted once).
+fn unexplored(paths: &[crate::baseline::PathStatus]) -> usize {
+    let names: std::collections::BTreeSet<&str> = paths.iter().map(|p| p.name.as_str()).collect();
+    names.iter().filter(|n| !paths.iter().any(|p| p.name == **n && p.baseline.is_some())).count()
 }

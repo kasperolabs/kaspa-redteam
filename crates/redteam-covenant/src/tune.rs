@@ -286,3 +286,91 @@ mod tests {
         assert!(c.contains(&500));
     }
 }
+
+/// The numbers that switch a feature on (a DCA interval, a price slope, a
+/// start time): compared with 0 (`if (interval > 0)`, `maxFill == 0 ||`,
+/// `slope != 0`, `tif == TIF_GTC` with a constant 0) or with the clock
+/// (`tx.daa >= activeFrom`, `this.ageDaa >= interval`). Those the user did not
+/// set and nothing links go to 0 ("off"); one the source requires to be
+/// positive (`require(scale > 0)`, a divisor) keeps its default. Every other
+/// number (prices, amounts) keeps its default too. None when nothing changes.
+pub fn zero_overrides(
+    c: &Contract,
+    user: &BTreeMap<String, String>,
+    links: &crate::contract::Links,
+) -> Option<(BTreeMap<String, String>, Vec<String>)> {
+    let flat: String = c.source.split_whitespace().collect();
+    // Constants equal to 0 count as 0 (`int constant TIF_GTC = 0;`).
+    let zeros: Vec<String> = c
+        .source
+        .lines()
+        .filter_map(|l| {
+            let t: String = l.split("//").next().unwrap_or("").split_whitespace().collect();
+            let rest = t.strip_prefix("intconstant")?;
+            let (name, v) = rest.trim_end_matches(';').split_once('=')?;
+            (v == "0").then(|| name.to_string())
+        })
+        .collect();
+    // The value's own name and the state field set from it (`int interval = init_interval;`).
+    let names_of = |name: &str| {
+        let mut names = vec![name.to_string()];
+        for l in c.source.lines() {
+            let t = l.split("//").next().unwrap_or("").trim().trim_end_matches(';');
+            if let Some((lhs, rhs)) = t.split_once('=') {
+                if rhs.trim() == name && lhs.trim_start().starts_with("int ") {
+                    if let Some(f) = lhs.split_whitespace().last() {
+                        names.push(f.to_string());
+                    }
+                }
+            }
+        }
+        names
+    };
+    let has = |pats: Vec<String>| pats.iter().any(|p| {
+        // A whole name: the character after it is not part of an identifier.
+        let mut from = 0;
+        while let Some(at) = flat[from..].find(p.as_str()) {
+            let end = from + at + p.len();
+            let next = flat[end..].chars().next().unwrap_or(' ');
+            let whole = !(p.ends_with(|ch: char| ch.is_alphanumeric() || ch == '_') && (next.is_alphanumeric() || next == '_'));
+            // A requirement is not a switch: `require(scale > 0)` always holds.
+            // `require(maxFill == 0 || ...)` still is one.
+            let required = flat[..from + at].ends_with("require(") && !p.contains("==");
+            if whole && (!required || p.starts_with("require(")) {
+                return true;
+            }
+            from = end;
+        }
+        false
+    });
+    let mut out = user.clone();
+    let mut zeroed = Vec::new();
+    for a in c.args.iter().filter(|a| a.ty == "int") {
+        if user.contains_key(&a.name) || links.ints.contains_key(&a.name) || a.origin == "override" {
+            continue;
+        }
+        if a.value == ArtifactValue::Int(0) {
+            continue;
+        }
+        let names = names_of(&a.name);
+        let positive = names.iter().any(|n| {
+            has(vec![format!("require({n}>0)"), format!("require({n}>=1)"), format!("require(0<{n})"), format!("/{n}"), format!("%{n}")])
+        });
+        let mut switch_pats = Vec::new();
+        for n in &names {
+            for z in std::iter::once("0".to_string()).chain(zeros.iter().cloned()) {
+                switch_pats.extend([format!("{n}>{z}"), format!("{n}!={z}"), format!("{n}=={z}"), format!("{z}<{n}")]);
+            }
+            switch_pats.extend([format!("tx.daa>={n}"), format!("this.ageDaa>={n}"), format!("{n}<=tx.daa")]);
+        }
+        // A switch wins over a positive requirement: `if (slope != 0) {
+        // require(slope > 0); ... }` asks for a positive slope only when on.
+        let _ = positive;
+        if !has(switch_pats) {
+            continue;
+        }
+        out.insert(a.name.clone(), "0".into());
+        zeroed.push(a.name.clone());
+    }
+    (!zeroed.is_empty()).then_some((out, zeroed))
+}

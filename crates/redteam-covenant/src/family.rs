@@ -496,21 +496,50 @@ fn repair(d: &mut Draft, built: &crate::sandbox::Built, f: &FailedCheck, main: &
                 "OpLessThan" => nb - 1,
                 _ => nb,
             };
-            if let Some(InputSpec::Covenant { args, .. }) = d.plan.inputs.get_mut(0) {
-                for a in args.iter_mut() {
-                    if let ArgRecipe::Value(ArtifactValue::Int(x)) = a {
-                        if *x == na && na != want {
-                            *x = want;
-                            return true;
-                        }
-                    }
+            // Arguments that index inputs or outputs are not amounts.
+            let index_args: Vec<String> = match d.plan.inputs.first() {
+                Some(InputSpec::Covenant { entry, .. }) => {
+                    let flat: String = crate::tune::entry_body(&main.source, entry).unwrap_or("").split_whitespace().collect();
+                    main.entry(entry)
+                        .map(|e| {
+                            e.params
+                                .iter()
+                                .filter(|p| {
+                                    let q = &p.name;
+                                    [format!("CovenantId({q})"), format!("tx.inputs[{q}]"), format!("tx.outputs[{q}]"), format!("ScriptSigLen({q})"), format!("WithTemplate({q},"), format!("readInputState({q})")]
+                                        .iter()
+                                        .any(|x| flat.contains(x.as_str()))
+                                })
+                                .map(|p| p.name.clone())
+                                .collect()
+                        })
+                        .unwrap_or_default()
                 }
+                _ => vec![],
+            };
+            let params: Vec<String> = match d.plan.inputs.first() {
+                Some(InputSpec::Covenant { entry, .. }) => main.entry(entry).map(|e| e.params.iter().map(|p| p.name.clone()).collect()).unwrap_or_default(),
+                _ => vec![],
+            };
+            if let Some(InputSpec::Covenant { args, .. }) = d.plan.inputs.get_mut(0) {
                 // A number passed as fixed bytes and converted in the script
-                // (`byte[8] nb`, `int n = int(nb)`): the same bytes, re-encoded.
+                // (`byte[8] nb`, `int n = int(nb)`): the exact bytes compared,
+                // re-encoded. Exact bytes are the stronger match, so first.
                 for a in args.iter_mut() {
                     if let ArgRecipe::Value(ArtifactValue::Bytes(v)) = a {
                         if v.len() == 8 && *v == f.a && na != want && want >= 0 {
                             *v = (want as u64).to_le_bytes().to_vec();
+                            return true;
+                        }
+                    }
+                }
+                for (i, a) in args.iter_mut().enumerate() {
+                    if params.get(i).is_some_and(|n| index_args.contains(n)) {
+                        continue;
+                    }
+                    if let ArgRecipe::Value(ArtifactValue::Int(x)) = a {
+                        if *x == na && na != want {
+                            *x = want;
                             return true;
                         }
                     }
