@@ -75,6 +75,9 @@ pub struct Baseline {
     /// Labels of secrets or signed readings the spend reveals.
     pub secrets: Vec<String>,
     pub lock: Option<LockInfo>,
+    /// Hostile versions of a family spend, built where the other programs are
+    /// known (see `family`): attack id, label, plan, what acceptance means.
+    pub variants: Vec<(&'static str, String, SpendPlan, String)>,
 }
 
 impl Baseline {
@@ -366,7 +369,7 @@ fn search_layouts(
                                 None
                             };
                             let signers = plan.signers();
-                            status.baseline = Some(Baseline { plan, signers, secrets: secrets.clone(), lock });
+                            status.baseline = Some(Baseline { plan, signers, secrets: secrets.clone(), lock, variants: vec![] });
                             return status;
                         }
                     }
@@ -1061,7 +1064,7 @@ fn search_cospend(
             let (v, _) = judge.run(contract, &plan);
             if v.accepted() {
                 let signers = plan.signers();
-                return Some(Baseline { plan, signers, secrets: secrets.clone(), lock: None });
+                return Some(Baseline { plan, signers, secrets: secrets.clone(), lock: None, variants: vec![] });
             }
         }
     }

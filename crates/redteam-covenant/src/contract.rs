@@ -38,6 +38,9 @@ impl StandIn {
 #[derive(Debug, Clone, Default)]
 pub struct Links {
     pub p2sh: BTreeMap<String, (String, Vec<u8>)>,
+    /// Values taken from another file of the project: a template hash (`kcc20_template`
+    /// -> KCC20.sil's template), with the program it came from.
+    pub values: BTreeMap<String, (String, Vec<u8>)>,
 }
 
 /// A secret the tool knows the preimage of. Constructor hash parameters are
@@ -152,6 +155,10 @@ impl Contract {
                     }
                     (v, "override".into())
                 }
+                None if links.values.contains_key(&p.name) => {
+                    let (program, v) = &links.values[&p.name];
+                    (ArtifactValue::Bytes(v.clone()), format!("template of {program}"))
+                }
                 None => match links.p2sh.get(&p.name) {
                     Some((program, redeem)) if matches!(ty, TypeArtifact::FixedBytes { len: 32 }) => {
                         stand_ins.push(StandIn {
@@ -189,7 +196,11 @@ impl Contract {
         let mut retemplated = false;
         if let Some(h) = own_template {
             for a in args.iter_mut() {
-                if a.ty == "byte[32]" && a.name.to_ascii_lowercase().contains("template") && a.origin != "override" {
+                if a.ty == "byte[32]"
+                    && a.name.to_ascii_lowercase().contains("template")
+                    && a.origin != "override"
+                    && !a.origin.starts_with("template of")
+                {
                     a.value = ArtifactValue::Bytes(h.clone());
                     a.origin = "own template hash".into();
                     retemplated = true;

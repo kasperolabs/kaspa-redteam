@@ -7,6 +7,7 @@
 //! signature (a payee taking more than their share) need roles, which is
 //! Tier 2.
 
+pub mod family;
 pub mod fee;
 pub mod inputs;
 pub mod oracle;

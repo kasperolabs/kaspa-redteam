@@ -477,6 +477,10 @@ impl Judge {
             plan.payload.clone(),
         );
 
+        // A zero-value output never reaches the mass rules (and divides by zero in them).
+        if tx.outputs.iter().any(|o| o.value == 0) {
+            return Err(anyhow!("an output carries no value"));
+        }
         // Commit the storage mass first: it is part of what gets signed.
         {
             let populated = PopulatedTransaction::new(&tx, entries.clone());
@@ -732,4 +736,78 @@ fn failing_input(tx: &PopulatedTransaction) -> Option<(usize, String)> {
         }
     }
     None
+}
+
+/// What an input's script compared when it failed: the two operands of the
+/// last comparison before the failing verify, as the engine's own execution
+/// log shows them. Lets the tool ask a script what it expected.
+#[derive(Debug, Clone)]
+pub struct FailedCheck {
+    pub input: usize,
+    pub op: String,
+    /// Second from top (the left-hand side as compiled), then top.
+    pub a: Vec<u8>,
+    pub b: Vec<u8>,
+    /// Every stack element seen during the run (preimages of hashes live here).
+    pub seen: Vec<Vec<u8>>,
+}
+
+pub fn trace_failure(b: &Built, input: usize) -> Option<FailedCheck> {
+    use kaspa_consensus_core::tx::VerifiableTransaction;
+    use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine, caches::Cache, covenants::CovenantsContext};
+    let populated = PopulatedTransaction::new(&b.tx, b.entries.clone());
+    let cov = CovenantsContext::from_tx(&populated).ok()?;
+    let cache = Cache::new(64);
+    let reused = SigHashReusedValuesUnsync::new();
+    let ctx = EngineCtx::new(&cache).with_covenants_ctx(&cov).with_reused(&reused);
+    let flags = EngineFlags { sigop_script_units: kaspa_consensus_core::mass::Gram(1000).into() };
+    let (inp, entry) = populated.populated_inputs().nth(input)?;
+    let limit = inp.compute_commit.allowed_script_units();
+    let mut log: Vec<u8> = Vec::new();
+    let failed = {
+        let mut vm = TxScriptEngine::from_transaction_input_with_script_units_limit(&populated, inp, input, entry, ctx, flags, limit)
+            .with_opcode_execution_log_buffer(&mut log);
+        vm.execute().is_err()
+    };
+    if !failed {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&log);
+    let lines: Vec<&str> = text.lines().filter(|l| l.starts_with("Executing opcode:")).collect();
+    let parse = |l: &str| -> (String, Vec<Vec<u8>>) {
+        let op = l["Executing opcode: ".len()..].split(',').next().unwrap_or("").trim().to_string();
+        let d = l.find("dstack:").map(|i| &l[i..]).unwrap_or("");
+        let items = d
+            .split('"')
+            .filter(|t| t.starts_with("0x"))
+            .map(|t| {
+                let h = &t[2..];
+                let mut v = vec![0u8; h.len() / 2];
+                let _ = faster_hex::hex_decode(h.as_bytes(), &mut v);
+                v
+            })
+            .collect();
+        (op, items)
+    };
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    for l in &lines {
+        for v in parse(l).1 {
+            if v.len() >= 32 && !seen.contains(&v) {
+                seen.push(v);
+            }
+        }
+    }
+    let (last_op, last_stack) = parse(lines.last()?);
+    let (op, stack) = if last_op.ends_with("Verify") && last_op != "OpVerify" {
+        (last_op, last_stack)
+    } else if lines.len() >= 2 {
+        parse(lines[lines.len() - 2])
+    } else {
+        return None;
+    };
+    if stack.len() < 2 {
+        return None;
+    }
+    let n = stack.len();
+    Some(FailedCheck { input, op, a: stack[n - 2].clone(), b: stack[n - 1].clone(), seen })
 }

@@ -1,5 +1,13 @@
 # Changelog
 
+## Tool 0.5.0 (library 0.4.0)
+
+- Families: a path that refers to another program's covenant id is also tried together with a coin of that program, each with its own covenant id, creating coins of a third (a bridge, its mint authority, the token cells). The draft is repaired from the scripts' own execution logs: a failed comparison shows the value the script computed, often a whole output script, and the tool uses it. Journals with records (`int off = FIXED + LEN * i`, a count, per-record checks) get one record.
+- Template links by name: `kcc20_template` gets KCC20.sil's template hash in a project.
+- New attack pack `family` (FAM-01 to FAM-06): mint more than the data says, mint to the attacker, mint twice, wrong covenant family, authority not continuing, replay on the next state. `fixtures/family/` and `tests/family.rs`: the real ETH bridge survives all six; a copy without replay protection is caught by FAM-06.
+- A program that only took part in another file's family spend says so in its own report.
+- Fixes: outputs with no value are refused before mass rules run; the KAS a relayer puts into a new coin is its own (no skim finding).
+
 ## Tool 0.4.9 (library 0.3.2)
 
 - Projects on the web page: the project card lists every contract with its verdict and a link to its report, so the second and third contracts are not lost below the first one's tables.
@@ -120,6 +128,10 @@
 - Report time now includes the search.
 
 # Attack library changelog
+
+## 0.4.0
+
+- Pack `family`: FAM-01 mint more than the data says, FAM-02 mint to the attacker, FAM-03 mint one coin twice, FAM-04 coin of the right program in the wrong family, FAM-05 authority does not continue, FAM-06 replay the same proof on the next state.
 
 ## 0.3.2
 

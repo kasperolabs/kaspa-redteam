@@ -124,7 +124,7 @@ pub fn load(path: &std::path::Path, contract: &Contract, judge: &Judge) -> Resul
             entry: format!("{label} (imported)"),
             name: label.clone(),
             state: None,
-            baseline: Some(Baseline { plan, signers, secrets: vec![], lock: None }),
+            baseline: Some(Baseline { plan, signers, secrets: vec![], lock: None, variants: vec![] }),
             unexplored_reason: None,
             tries: 0,
             imported: true,

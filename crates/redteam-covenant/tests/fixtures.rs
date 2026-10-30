@@ -22,6 +22,10 @@ fn every_attack_has_fixtures_and_they_behave() {
     let mut failures = Vec::new();
     for attack in attacks {
         let id = attack.meta().id;
+        // Family attacks need a project of several files: tests/family.rs.
+        if attack.meta().pack == "family" {
+            continue;
+        }
         let dir = fixtures_dir().join(id);
         let vuln = dir.join("vulnerable.sil");
         let fixed = dir.join("fixed.sil");

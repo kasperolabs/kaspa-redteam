@@ -119,6 +119,26 @@ pub fn detect(files: &[ProjectFile], overrides: &BTreeMap<String, String>) -> Re
                 links.push(Link { from: a.file.clone(), via: arg.name.clone(), to: b.file.clone(), kind: "address" });
             }
         }
+        // Templates by name: `kcc20_template` / `gen__init_bridge_mint_template` names
+        // a program of the project; it gets that program's real template hash.
+        for arg in a.contract.args.iter().filter(|x| x.ty == "byte[32]" && x.origin != "override") {
+            let n = norm(&arg.name);
+            if !n.contains("template") {
+                continue;
+            }
+            let core = n.replace("template", "").replace("gen", "").replace("init", "");
+            if core.len() < 3 {
+                continue;
+            }
+            let best = compiled.iter().enumerate().filter(|(bi, b)| *bi != ai && !b.template.is_empty()).find_map(|(bi, b)| {
+                [norm(&b.contract.contract_name), norm(&b.stem)].iter().any(|nm| *nm == core).then_some(bi)
+            });
+            if let Some(bi) = best {
+                let b = &compiled[bi];
+                per_file[ai].values.insert(arg.name.clone(), (b.contract.contract_name.clone(), b.template.clone()));
+                links.push(Link { from: a.file.clone(), via: arg.name.clone(), to: b.file.clone(), kind: "template" });
+            }
+        }
         // Templates: a pinned hash that is another file's program.
         let mut pinned: Vec<(String, Vec<u8>)> = hash_literals(&a.contract.source);
         for arg in &a.contract.args {
@@ -168,8 +188,43 @@ pub fn run(
             crate::baseline::deadline().map(|d| started + d.saturating_duration_since(started) / (n - i) as u32),
         );
         let ov = overrides_for(&f.source, overrides)?;
-        let t = crate::tune::tune_linked(&f.name, &f.source, &ov, l, judge)?;
+        let mut t = crate::tune::tune_linked(&f.name, &f.source, &ov, l, judge)?;
+        // Paths no single-program spend could open: try them together with a
+        // coin of another program of the project (a bridge with its mint authority).
+        let mut family_notes = Vec::new();
+        if files.len() > 1 {
+            let programs: Vec<crate::family::Program> = files
+                .iter()
+                .zip(per_file.iter())
+                .filter(|(g, _)| g.name != f.name)
+                .filter_map(|(g, gl)| {
+                    let gov = overrides_for(&g.source, overrides).ok()?;
+                    let c = Contract::load_linked(&g.name, &g.source, &gov, gl).ok()?;
+                    Some(crate::family::Program { file: g.name.clone(), contract: c, cov_id: crate::family::family_id(&g.name) })
+                })
+                .collect();
+            let names: Vec<String> = {
+                let mut v: Vec<String> = t.paths.iter().map(|p| p.name.clone()).collect();
+                v.dedup();
+                v
+            };
+            for name in names {
+                if crate::baseline::out_of_time() {
+                    break;
+                }
+                if let Some((status, notes)) = crate::family::explore(&t.contract, &name, &programs, judge) {
+                    // A path no single-program spend opened is replaced; an explored
+                    // one gains its family variant (a mint next to a heartbeat).
+                    match t.paths.iter().position(|p| p.name == name && p.baseline.is_none()) {
+                        Some(k) => t.paths[k] = status,
+                        None => t.paths.push(status),
+                    }
+                    family_notes.extend(notes);
+                }
+            }
+        }
         let mut notes = t.notes;
+        notes.extend(family_notes);
         for x in links.iter().filter(|x| x.from == f.name) {
             notes.push(match x.kind {
                 "address" => format!("project: `{}` is the address of {} (its real script, not a stand-in)", x.via, x.to),
@@ -179,5 +234,29 @@ pub fn run(
         reports.push(crate::run_paths_timed(&t.contract, only, t.paths, vec![], notes, started));
     }
     crate::baseline::set_file_deadline(None);
+    // A program that only took part in another file's family spend says so in
+    // its own report, so "nothing could be attacked" is not read as untested.
+    let members: Vec<(String, String, String, String)> = reports
+        .iter_mut()
+        .flat_map(|r| {
+            let (keep, member): (Vec<String>, Vec<String>) =
+                std::mem::take(&mut r.notes).into_iter().partition(|n| !n.starts_with("family-member: "));
+            r.notes = keep;
+            member
+        })
+        .filter_map(|n| {
+            let mut it = n["family-member: ".len()..].split('|').map(str::to_string);
+            Some((it.next()?, it.next()?, it.next()?, it.next()?))
+        })
+        .collect();
+    for (r, f) in reports.iter_mut().zip(files.iter()) {
+        for (sib, entry, main, path) in members.iter().filter(|m| m.0 == f.name) {
+            r.notes.insert(
+                0,
+                format!("family: `{entry}` of this file was spent and attacked as part of {main}'s path `{path}` (see that report): the FAM attacks there change what it creates and how it continues."),
+            );
+            let _ = sib;
+        }
+    }
     Ok((links, reports))
 }
