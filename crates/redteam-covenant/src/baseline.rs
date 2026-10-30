@@ -152,8 +152,24 @@ pub fn search_all(contract: &Contract, judge: &Judge) -> Vec<PathStatus> {
     let mut i = 0;
     while i < states.len() && i < MAX_STATES && (i == 0 || !out_of_time()) {
         let st = states[i].clone();
-        let mut level: Vec<PathStatus> =
-            contract.entries.par_iter().map(|e| search_path(contract, judge, &e.name, st.as_ref())).collect();
+        // An entry that requires another coin of its covenant to lead
+        // (`OpCovInputIdx(id, 0) != this.activeInputIndex`) can never pass
+        // alone: a short solo try, and the time goes to pairing it below.
+        let follower = |name: &str| {
+            contract.cov_mode
+                && crate::tune::entry_body(&contract.source, name).is_some_and(|b| b.contains("!= this.activeInputIndex"))
+        };
+        let mut level: Vec<PathStatus> = contract
+            .entries
+            .par_iter()
+            .map(|e| {
+                if follower(&e.name) {
+                    search_path_budget(contract, judge, &e.name, st.as_ref(), 256)
+                } else {
+                    search_path(contract, judge, &e.name, st.as_ref())
+                }
+            })
+            .collect();
         // Delegate entries (a KCC-20 `transfer_delegator`) only run next to a
         // leader coin of the same covenant: retry them beside an explored path.
         if contract.cov_mode {

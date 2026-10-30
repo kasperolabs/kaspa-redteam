@@ -1,5 +1,9 @@
 # Changelog
 
+## Tool 0.8.2 (library 0.7.0)
+
+- A follower entry (one that requires another coin of its covenant to lead, `OpCovInputIdx(id, 0) != this.activeInputIndex`) gets a short solo search, and its time goes to pairing it with a leader. Before, its solo search used the whole budget first, and on a slower server the pairing step ran out of time (`minted:transfer_delegator` unexplored). The curve project now takes 2.5 s instead of 13.6 s.
+
 ## Tool 0.8.1 (library 0.7.0)
 
 - A path of a program that ran inside another file's family spend counts as explored in its own report (`transfer_delegator` of the KCC-20 program, spent by the seller's coin in the curve's `sell`). On a slower server its own search could run out of tries looking for a leader it cannot build alone, and the report showed a gap that was not one.
