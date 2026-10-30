@@ -363,6 +363,16 @@ pub fn run(
                 format!("family: `{entry}` of this file was spent and attacked as part of {main}'s path `{path}` (see that report): the FAM attacks there change what it creates and how it continues."),
             );
             let _ = sib;
+            // Its own search may not have found a spend for that entry (a
+            // follower needs a leader): the family spend explored it.
+            let covered = format!("explored as part of {main}'s path `{path}` (see that report)");
+            if let Some(map) = r.context.get_mut("spend_map").and_then(|m| m.as_array_mut()) {
+                for row in map.iter_mut().filter(|x| x["path"] == entry.as_str() && x["explored"] != true) {
+                    row["explored"] = serde_json::Value::Bool(true);
+                    row["summary"] = serde_json::Value::String(covered.clone());
+                }
+            }
+            r.notes.retain(|n| !n.starts_with(&format!("path `{entry}` unexplored")));
         }
     }
     Ok((links, reports))

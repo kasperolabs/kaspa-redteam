@@ -111,6 +111,9 @@ fn curve_family() {
     assert!(curve.1.is_empty(), "the curve should survive: {:?}", curve.1);
     assert!(curve.3.is_empty(), "curve gaps: {:?}", curve.3);
     assert!(curve.2 >= 6, "family attacks on the curve: {}", curve.2);
+    // The follower entry ran inside `sell`, so the token program has no gap either.
+    let token = fixed.iter().find(|r| r.0 == "KCC20.sil").unwrap();
+    assert!(token.3.is_empty(), "KCC20 gaps: {:?}", token.3);
     let vuln = run_files("curve_vulnerable", &["curve.sil", "KCC20.sil"]);
     let curve = vuln.iter().find(|r| r.0 == "curve.sil").unwrap();
     assert!(curve.1.contains(&"FAM-09".to_string()), "free tokens not caught: {:?}", curve.1);

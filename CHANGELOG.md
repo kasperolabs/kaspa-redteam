@@ -1,5 +1,9 @@
 # Changelog
 
+## Tool 0.8.1 (library 0.7.0)
+
+- A path of a program that ran inside another file's family spend counts as explored in its own report (`transfer_delegator` of the KCC-20 program, spent by the seller's coin in the curve's `sell`). On a slower server its own search could run out of tries looking for a leader it cannot build alone, and the report showed a gap that was not one.
+
 ## Tool 0.8.0 (library 0.7.0)
 
 - A third family shape: a market that owns another program's coin by covenant id and computes every coin itself (a bonding curve). The repair loop now also sets the owned coin's state from the market's checks, moves the market's own state where a comparison asks (`m <= sold`), sets number arguments (`m > 0`) and output values (`successor >= in + cost`, paid by the funding coin).

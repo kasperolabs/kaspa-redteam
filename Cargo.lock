@@ -2747,7 +2747,7 @@ dependencies = [
 
 [[package]]
 name = "kaspa-redteam"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3994,7 +3994,7 @@ dependencies = [
 
 [[package]]
 name = "redteam-core"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "faster-hex 0.10.1",
  "serde",
@@ -4004,7 +4004,7 @@ dependencies = [
 
 [[package]]
 name = "redteam-covenant"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "ark-bn254 0.6.0",
@@ -4034,7 +4034,7 @@ dependencies = [
 
 [[package]]
 name = "redteam-node"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "inventory",

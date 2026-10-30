@@ -781,6 +781,10 @@ pub fn explore(main: &Contract, entry: &str, programs: &[Program], judge: &Judge
                         sib.file, sib_entry.name
                     ));
                     notes.push(format!("family-member: {}|{}|{}|{entry}+{}", sib.file, sib_entry.name, main.file_name, sib_entry.name));
+                    if let Some(del) = &d.delegate {
+                        // The follower entry ran too, on a coin an honest key owns.
+                        notes.push(format!("family-member: {}|{}|{}|{entry}+{}", sib.file, del.entry, main.file_name, sib_entry.name));
+                    }
                     // The coins this spend created, for the next step: spending them.
                     for (k, r) in d.redeems.iter().filter(|(k, _)| **k >= 2) {
                         if let Some(p) = programs.iter().find(|p| decode_state(&p.contract, r).is_some()) {
