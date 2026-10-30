@@ -1,5 +1,12 @@
 # Changelog
 
+## Tool 0.4.1 (library 0.3.1)
+
+- OUT-04 (new): a permissionless path that fixes its payouts but not the coin's value lets whoever spends it keep the rest. For a secret-released path that includes anyone who copies the secret from the mempool.
+- Search: a coin the entry caps in its source (`tx.inputs[this.activeInputIndex].value <= a + b + maxFee`, or `==`, `<`) is tried at that value first.
+- Spend map: secret paths read "anyone who knows the secret behind `pinHash`".
+- `examples/doordash_escrow_FAIL.sil` and `_PASS.sil`: a delivery escrow released by a PIN.
+
 ## Tool 0.4.0 (library 0.3.0)
 
 - Projects: give several `.sil` files in one run (`kaspa-redteam treasury.sil fund.sil`) and they are tested as one program. A P2SH parameter named after another file gets that contract's real script instead of a stand-in; a pinned `byte[32]` equal to another file's template hash is detected. The report lists the links, then each contract's results; findings go to `out/<stem>/`; `--arg` goes to whichever file has the parameter.
@@ -73,6 +80,10 @@
 - Report time now includes the search.
 
 # Attack library changelog
+
+## 0.3.1
+
+- OUT-04: keep what the fixed payouts leave over.
 
 ## 0.3.0
 

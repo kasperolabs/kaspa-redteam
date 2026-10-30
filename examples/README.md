@@ -12,6 +12,7 @@ Small contracts in the shapes that came first on other chains, each in a broken 
 | `revenue_split` | 70/30 payment splitter | IN-01, IN-02: shares measured against input 0 |
 | `price_bet` | Bet settled by an oracle reading | ORC-04: the oracle key comes from the caller |
 | `name_registry` | One coin per name, owner in state | ST-01: anyone can rewrite the owner |
+| `doordash_escrow` | Delivery escrow released by a PIN, split four ways | IN-01, OUT-04: two deposits pay out once; the excess goes to whoever releases |
 | `leaky_vault` | Every classic bug in one file | all ten covenant attacks |
 
 ```

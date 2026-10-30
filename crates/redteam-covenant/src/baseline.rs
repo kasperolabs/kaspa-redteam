@@ -264,6 +264,13 @@ fn search_layouts(
     // Coin sizes: the default, then "exactly an amount plus a small fee",
     // for covenants that only accept a precisely funded deposit.
     let mut coin_values = vec![COVENANT_VALUE];
+    // A coin the entry caps or fixes in its own source
+    // (`tx.inputs[this.activeInputIndex].value <= a + b + fee`) comes first.
+    for v in input_value_caps(contract, entry_name) {
+        if !coin_values.contains(&v) {
+            coin_values.insert(0, v);
+        }
+    }
     for a in contract.ctor_ints.iter().filter(|a| **a >= 1_000_000 && (**a as u64) < COVENANT_VALUE) {
         let v = *a as u64 + BASE_FEE;
         if coin_values.len() < 3 && !coin_values.contains(&v) {
@@ -1004,4 +1011,62 @@ fn search_cospend(
         }
     }
     None
+}
+
+/// Values the entry pins its own coin to, read from lines like
+/// `require(tx.inputs[this.activeInputIndex].value <= a + b + maxFee)`:
+/// the expression is a sum or difference of constructor ints and literals.
+fn input_value_caps(contract: &Contract, entry_name: &str) -> Vec<u64> {
+    let Some(body) = crate::tune::entry_body(&contract.source, entry_name) else { return vec![] };
+    let ints: std::collections::BTreeMap<&str, i64> = contract
+        .args
+        .iter()
+        .filter_map(|a| match &a.value {
+            ArtifactValue::Int(n) => Some((a.name.as_str(), *n)),
+            _ => None,
+        })
+        .collect();
+    let mut out = Vec::new();
+    for line in body.lines() {
+        let Some(at) = line.find("tx.inputs[this.activeInputIndex].value") else { continue };
+        let rest = line[at + 38..].trim_start();
+        let (op, expr) = if let Some(e) = rest.strip_prefix("<=") {
+            ("<=", e)
+        } else if let Some(e) = rest.strip_prefix("==") {
+            ("==", e)
+        } else if let Some(e) = rest.strip_prefix('<') {
+            ("<", e)
+        } else {
+            continue;
+        };
+        let expr = expr.split(|c| c == ')' || c == ';' || c == '&' || c == '|').next().unwrap_or("");
+        let mut total: i64 = 0;
+        let mut sign = 1;
+        let mut ok = true;
+        for tok in expr.split_inclusive(|c| c == '+' || c == '-') {
+            let (term, next) = match tok.chars().last() {
+                Some('+') => (&tok[..tok.len() - 1], 1),
+                Some('-') => (&tok[..tok.len() - 1], -1),
+                _ => (tok, 1),
+            };
+            let term = term.trim();
+            let v = term.replace('_', "").parse::<i64>().ok().or_else(|| ints.get(term).copied());
+            match v {
+                Some(v) => total += sign * v,
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+            sign = next;
+        }
+        if !ok || total <= 0 {
+            continue;
+        }
+        let v = if op == "<" { total - 1 } else { total } as u64;
+        if v > BASE_FEE && !out.contains(&v) {
+            out.push(v);
+        }
+    }
+    out
 }

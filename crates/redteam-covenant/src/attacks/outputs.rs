@@ -178,3 +178,70 @@ impl CovenantAttack for Out03 {
     }
 }
 inventory::submit! { CovenantPlugin(&Out03) }
+
+pub struct Out04;
+static OUT04: AttackMeta = AttackMeta {
+    id: "OUT-04",
+    pack: "outputs",
+    target: Target::Covenant,
+    title: "Keep what the fixed payouts leave over",
+    catches: "fixed payouts with nothing tying them to the coin's value",
+    severity: Severity::Med,
+    fix_pattern: "require(tx.inputs[this.activeInputIndex].value <= a + b + c + maxFee);  // or pin a change output back to the depositor",
+};
+
+/// A normal fee in the sandbox; anything well above it is value nobody claimed.
+const NORMAL_FEE: u64 = 20_000;
+
+impl CovenantAttack for Out04 {
+    fn meta(&self) -> &'static AttackMeta {
+        &OUT04
+    }
+    fn order(&self) -> u32 {
+        22
+    }
+    fn attempts(&self, cx: &AttackCx) -> Result<Vec<Attempt>, String> {
+        let mut out = Vec::new();
+        for (p, b) in cx.live_paths().filter(|(_, b)| b.permissionless()) {
+            // What the honest spend did not pay out: the fee, plus change it
+            // sent back to the covenant's own address (which no rule may require).
+            let kept: Vec<OutputSpec> =
+                b.plan.outputs.iter().filter(|o| !matches!(o.to, Dest::SelfCovenant)).cloned().collect();
+            if kept.is_empty() {
+                continue;
+            }
+            let paid: u64 = kept.iter().map(|o| o.value).sum();
+            let left = b.plan.input_total().saturating_sub(paid);
+            if left <= 5 * NORMAL_FEE {
+                continue;
+            }
+            let take = left - NORMAL_FEE;
+            let mut plan = b.plan.clone();
+            plan.outputs = kept;
+            plan.outputs.push(OutputSpec::new(take, Dest::Key(KeyRef::Attacker)));
+            let who = if b.secrets.is_empty() {
+                "anyone".to_string()
+            } else {
+                format!("whoever knows the secret behind {} (and anyone who copies it from the mempool)", b.secrets.join(" + "))
+            };
+            out.push(Attempt {
+                path: p.entry.clone(),
+                label: format!("honest outputs kept, the {} left over to attacker", kas(take)),
+                plan,
+                explanation: format!(
+                    "the path fixes its payouts but not what is left of the coin. Here the coin held {} and the payouts total {}, so {who} kept {} by adding an output of their own. It costs nothing when every coin holds exactly the payouts plus the fee; it matters on an overpayment, a top-up, or a deposit made before the amounts were final.",
+                    kas(b.plan.input_total()),
+                    kas(paid),
+                    kas(take)
+                ),
+                severity: None,
+                takeover: false,
+            });
+        }
+        if out.is_empty() {
+            return Err("no explored permissionless path leaves value unclaimed".into());
+        }
+        Ok(out)
+    }
+}
+inventory::submit! { CovenantPlugin(&Out04) }

@@ -71,7 +71,7 @@ pub fn spend_map(c: &Contract, paths: &[PathStatus]) -> serde_json::Value {
                     } else if b.plan.has_resigned() {
                         "a user holding the baseline's listed key (the tool re-signs)".to_string()
                     } else if !b.secrets.is_empty() {
-                        format!("anyone holding {} (no transaction signature)", b.secrets.join(" + "))
+                        format!("anyone who knows the secret behind {} (no transaction signature)", b.secrets.join(" + "))
                     } else {
                         "anyone, no signature".to_string()
                     };

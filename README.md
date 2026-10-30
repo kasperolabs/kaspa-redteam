@@ -145,7 +145,7 @@ A path the search cannot spend is reported as **unexplored**, never as safe. For
 
 The attacker holds only their own key, reads the chain and the mempool (so a secret revealed by a pending claim is public), and can build any transaction. An insider abusing their own signature (a payee taking more than their share) needs to know the roles; that is Tier 2.
 
-## Attack library v0.3.0
+## Attack library v0.3.1
 
 | ID | Pack | Attack | Catches |
 | --- | --- | --- | --- |
@@ -157,6 +157,7 @@ The attacker holds only their own key, reads the chain and the mempool (so a sec
 | OUT-01 | outputs | Same value, attacker's script | Recipient not pinned |
 | OUT-02 | outputs | Same script, output 0 cut to 10% | Amount not pinned |
 | OUT-03 | outputs | Output 0 valid, later output skimmed | Only the first output checked |
+| OUT-04 | outputs | Keep what the fixed payouts leave over | Payouts fixed, but nothing ties them to the coin's value |
 | FEE-01 | fees | Outputs halved, rest to fee | No bound on the fee |
 | IN-01 | inputs | Second covenant coin, shared outputs | Checks not tied to the active input |
 | IN-02 | inputs | Attacker coin at input 0 | Values read from `tx.inputs[0]` instead of `this.activeInputIndex` |

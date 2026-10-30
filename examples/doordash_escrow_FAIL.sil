@@ -1,0 +1,41 @@
+pragma silverscript ^0.1.0;
+
+// Delivery escrow, BROKEN: the customer deposits the order total; the driver
+// releases it by revealing the PIN, split into restaurant, driver, and two tax
+// payouts. The customer can reclaim it after a timeout.
+//
+// Bugs: release does not limit how many coins it spends, so two deposits with
+// the same terms pay out once and the second coin is free for the taking; and
+// nothing ties the payouts to the deposit, so anything above them goes to
+// whoever builds the release.
+contract DoorDashEscrow(
+    pubkey restaurant,
+    pubkey driver,
+    pubkey irs,
+    pubkey stateTax,
+    pubkey user,
+    byte[32] pinHash,
+    int restaurantAmount,
+    int driverAmount,
+    int irsAmount,
+    int stateTaxAmount,
+    int refundDelayBlocks
+) {
+    entry release(byte[] pin) {
+        require(sha256(pin) == pinHash);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(restaurant)));
+        require(tx.outputs[0].value == restaurantAmount);
+        require(tx.outputs[1].scriptPubKey == byte[](new ScriptPubKeyP2PK(driver)));
+        require(tx.outputs[1].value == driverAmount);
+        require(tx.outputs[2].scriptPubKey == byte[](new ScriptPubKeyP2PK(irs)));
+        require(tx.outputs[2].value == irsAmount);
+        require(tx.outputs[3].scriptPubKey == byte[](new ScriptPubKeyP2PK(stateTax)));
+        require(tx.outputs[3].value == stateTaxAmount);
+    }
+
+    entry reclaim(sig userSig) {
+        require(checkSig(userSig, user));
+        require(this.ageDaa >= refundDelayBlocks);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(user)));
+    }
+}

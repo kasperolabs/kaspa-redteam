@@ -1,0 +1,14 @@
+// OUT-04 fixed: one output, and the coin may hold no more than the payment
+// plus a fee, so nothing is left over for whoever releases it.
+pragma silverscript ^0.1.0;
+
+contract CodeRelease(pubkey payee, byte[32] codeHash, int amount, int maxFee) {
+    entry release(byte[] code) {
+        require(sha256(code) == codeHash);
+        require(tx.inputs.length == 1);
+        require(tx.outputs.length == 1);
+        require(tx.inputs[this.activeInputIndex].value <= amount + maxFee);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(payee)));
+        require(tx.outputs[0].value == amount);
+    }
+}

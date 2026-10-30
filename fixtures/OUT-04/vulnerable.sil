@@ -1,0 +1,13 @@
+// OUT-04 vulnerable: whoever knows the code releases a fixed payment to the
+// payee; nothing ties the payment to the coin's value, so the spender keeps
+// the rest.
+pragma silverscript ^0.1.0;
+
+contract CodeRelease(pubkey payee, byte[32] codeHash, int amount) {
+    entry release(byte[] code) {
+        require(sha256(code) == codeHash);
+        require(tx.inputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(payee)));
+        require(tx.outputs[0].value == amount);
+    }
+}
