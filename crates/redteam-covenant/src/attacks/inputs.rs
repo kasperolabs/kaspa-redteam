@@ -15,6 +15,7 @@ static IN01: AttackMeta = AttackMeta {
     catches: "output checks not tied to the active input (double counting)",
     severity: Severity::High,
     fix_pattern: "require(tx.inputs.length == 1);  // or check outputs relative to this.activeInputIndex",
+    in_practice: "Two coins end up at the same address: a wallet sends the deposit twice (a double tap, a retry after a timeout), someone tops up, or two deals reuse the same terms. One spend then pays out once and the second coin goes to whoever built the transaction.",
 };
 
 impl CovenantAttack for In01 {
@@ -74,6 +75,7 @@ static IN02: AttackMeta = AttackMeta {
     catches: "values read from a fixed input index instead of this.activeInputIndex",
     severity: Severity::High,
     fix_pattern: "int current = tx.inputs[this.activeInputIndex].value;  // never tx.inputs[0] unless input 0 is pinned",
+    in_practice: "Whoever spends puts a coin of their own first in the transaction. Rules that read input 0 now measure the attacker's coin instead of the covenant's, so they pass with the wrong numbers.",
 };
 
 impl CovenantAttack for In02 {

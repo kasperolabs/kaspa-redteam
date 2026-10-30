@@ -23,6 +23,7 @@ static SIG01: AttackMeta = AttackMeta {
     catches: "checkSig result computed but not enforced",
     severity: Severity::High,
     fix_pattern: "require(checkSig(sig, owner));  // never just evaluate checkSig",
+    in_practice: "The contract checks a signature but never stops on a bad one, so any made-up signature works. Anyone who finds the address can take the coin.",
 };
 
 impl CovenantAttack for Sig01 {
@@ -75,6 +76,7 @@ static SIG02: AttackMeta = AttackMeta {
     catches: "signature checked against a caller-supplied key, or the wrong field",
     severity: Severity::High,
     fix_pattern: "require(checkSig(sig, owner));  // owner is a constructor param, never an entry argument",
+    in_practice: "The contract checks a signature against a key the spender supplies. Anyone signs with their own key and passes as the rightful party.",
 };
 
 impl CovenantAttack for Sig02 {

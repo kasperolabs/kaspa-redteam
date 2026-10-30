@@ -13,6 +13,7 @@ static FEE01: AttackMeta = AttackMeta {
     catches: "no lower bound on what the outputs must carry",
     severity: Severity::Med,
     fix_pattern: "bound the fee: require(tx.outputs[0].value >= tx.inputs[this.activeInputIndex].value - MAX_FEE);",
+    in_practice: "Anyone who spends the coin can shrink what the outputs carry and let the rest become the fee. A miner does it in their own block and keeps the difference; anyone else can do it out of spite.",
 };
 
 impl CovenantAttack for Fee01 {

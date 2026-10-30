@@ -16,6 +16,7 @@ static ORC04: AttackMeta = AttackMeta {
     catches: "oracle or conductor key not pinned",
     severity: Severity::High,
     fix_pattern: "require(checkMsgSig(s, byte[32](blake2b(msg)), conductor));  // conductor is a constructor param",
+    in_practice: "The contract accepts a reading signed by any key the spender names, not the oracle's. Anyone signs their own price, score or result and settles the bet their way.",
 };
 
 impl CovenantAttack for Orc04 {

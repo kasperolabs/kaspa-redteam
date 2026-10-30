@@ -18,6 +18,7 @@ static ST01: AttackMeta = AttackMeta {
     catches: "next state's owner/key field chosen by whoever spends, with no signature from the current owner",
     severity: Severity::High,
     fix_pattern: "require(checkSig(sig(byte[65](witness)), pubkey(owner)));  // the current owner signs any change of hands",
+    in_practice: "A stranger spends the coin through a path anyone may use and writes their own key as the new owner. From then on the coin, or the name or seat it stands for, is theirs.",
 };
 
 impl CovenantAttack for St01 {

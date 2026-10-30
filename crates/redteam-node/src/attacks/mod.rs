@@ -52,6 +52,7 @@ pub(crate) fn finding(
         subject: subject.into(),
         explanation,
         fix_pattern: meta.fix_pattern.into(),
+        in_practice: meta.in_practice.into(),
         repro,
     }
 }

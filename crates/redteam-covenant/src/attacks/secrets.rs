@@ -14,6 +14,7 @@ static SEC01: AttackMeta = AttackMeta {
     catches: "hash lock or signed reading with no spender signature and no fixed recipient",
     severity: Severity::High,
     fix_pattern: "require(sha256(secret) == hash && checkSig(sig, claimer));  // or pin the output to a recipient fixed at deploy",
+    in_practice: "The honest spend reveals the secret (a PIN, a preimage, a signed reading) in the mempool before it is mined. Anyone watching copies it into their own spend with a higher fee and takes the coin.",
 };
 
 impl CovenantAttack for Sec01 {

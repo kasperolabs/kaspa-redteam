@@ -1,5 +1,9 @@
 # Changelog
 
+## Tool 0.4.7 (library 0.3.2)
+
+- Every attack says how its situation comes about in real use ("a wallet sends the deposit twice", "someone watching the mempool copies the secret"). Findings carry it as `in_practice` (command line: "In practice:", web page: "How this happens in practice", finding files, JSON), and the attack library on the page lists it.
+
 ## Tool 0.4.6 (library 0.3.1)
 
 - Constructor values take Kaspa addresses: `kaspa:q...` gives a key, `kaspa:p...` a contract's script hash (on the command line, in values files and on the page). A contract address where a key is expected, or a typo, is an error.
@@ -105,6 +109,10 @@
 - Report time now includes the search.
 
 # Attack library changelog
+
+## 0.3.2
+
+- Every attack has an `in_practice` line: how its situation comes about in real use.
 
 ## 0.3.1
 

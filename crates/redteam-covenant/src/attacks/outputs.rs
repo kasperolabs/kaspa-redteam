@@ -24,6 +24,7 @@ static OUT01: AttackMeta = AttackMeta {
     catches: "output script (recipient) not constrained",
     severity: Severity::High,
     fix_pattern: "require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(payee)));",
+    in_practice: "The amount is checked but not who receives it. Whoever spends first sends the right amount to their own address.",
 };
 
 impl CovenantAttack for Out01 {
@@ -78,6 +79,7 @@ static OUT02: AttackMeta = AttackMeta {
     catches: "output value not constrained",
     severity: Severity::High,
     fix_pattern: "require(tx.outputs[0].value >= expectedAmount);",
+    in_practice: "The recipient is checked but not the amount. Whoever spends pays the right person a token sompi and keeps the rest.",
 };
 
 impl CovenantAttack for Out02 {
@@ -130,6 +132,7 @@ static OUT03: AttackMeta = AttackMeta {
     catches: "only the first output checked",
     severity: Severity::High,
     fix_pattern: "check every output the path creates, e.g. require(tx.outputs[1].value >= change && tx.outputs[1].scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey);",
+    in_practice: "Only the first output is checked. The change or second payment is left open, so whoever spends shortens it and takes the difference.",
 };
 
 impl CovenantAttack for Out03 {
@@ -188,6 +191,7 @@ static OUT04: AttackMeta = AttackMeta {
     catches: "fixed payouts with nothing tying them to the coin's value",
     severity: Severity::Med,
     fix_pattern: "require(tx.inputs[this.activeInputIndex].value <= a + b + c + maxFee);  // or pin a change output back to the depositor",
+    in_practice: "The coin holds more than the fixed payouts: an overpayment, a top-up, a deposit made before the final amounts were known. Whoever spends it adds an output and keeps the excess.",
 };
 
 /// A normal fee in the sandbox; anything well above it is value nobody claimed.
@@ -229,7 +233,7 @@ impl CovenantAttack for Out04 {
                 label: format!("honest outputs kept, the {} left over to attacker", kas(take)),
                 plan,
                 explanation: format!(
-                    "the path fixes its payouts but not what is left of the coin. Here the coin held {} and the payouts total {}, so {who} kept {} by adding an output of their own. It costs nothing when every coin holds exactly the payouts plus the fee; it matters on an overpayment, a top-up, or a deposit made before the amounts were final.",
+                    "the path fixes its payouts but not what is left of the coin. Here the coin held {} and the payouts total {}, so {who} kept {} by adding an output of their own. A coin that always holds exactly the payouts plus the fee loses nothing.",
                     kas(b.plan.input_total()),
                     kas(paid),
                     kas(take)

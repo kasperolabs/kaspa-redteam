@@ -30,6 +30,7 @@ static NODE01: AttackMeta = AttackMeta {
     catches: "mempool admits transactions with missing inputs as non-orphans",
     severity: Severity::Med,
     fix_pattern: "reject (or orphan-pool, when allowed) any transaction whose inputs are not in the UTXO set",
+    in_practice: "Someone relays a transaction that spends a coin that does not exist. A node that admits it wastes resources on it and passes it on.",
 };
 
 impl NodeAttack for Node01 {
@@ -72,6 +73,7 @@ static NODE02: AttackMeta = AttackMeta {
     catches: "conflicting transactions both admitted without replace-by-fee",
     severity: Severity::High,
     fix_pattern: "a plain submit of a conflicting spend must be rejected; replacement only through the RBF path with a higher fee",
+    in_practice: "Someone sends two transactions spending the same coin. A node that keeps both lets one be shown to a merchant while the other confirms.",
 };
 
 impl NodeAttack for Node02 {
@@ -126,6 +128,7 @@ static NODE03: AttackMeta = AttackMeta {
     catches: "value created out of nothing in a relayed transaction",
     severity: Severity::High,
     fix_pattern: "reject any transaction whose outputs exceed its inputs",
+    in_practice: "Someone relays a transaction whose outputs are worth more than its inputs. A node that admits it treats coins created out of nothing as real.",
 };
 
 impl NodeAttack for Node03 {

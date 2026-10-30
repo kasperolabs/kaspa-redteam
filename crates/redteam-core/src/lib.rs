@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 /// Version of the attack library. Bumped whenever attacks are added or changed,
 /// so old badges visibly age.
-pub const LIBRARY_VERSION: &str = "0.3.1";
+pub const LIBRARY_VERSION: &str = "0.3.2";
 pub const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What kind of thing an attack targets. New engines add a variant here.
@@ -75,6 +75,8 @@ pub struct AttackMeta {
     pub severity: Severity,
     /// Short pattern that closes the hole.
     pub fix_pattern: &'static str,
+    /// Plain words: how the situation behind this attack comes about in real use.
+    pub in_practice: &'static str,
 }
 
 /// A confirmed problem. Only produced when the judge accepted something the
@@ -88,6 +90,9 @@ pub struct Finding {
     /// Which part of the target failed: a spend path name, an RPC, a rule.
     pub subject: String,
     pub explanation: String,
+    /// How this comes about in real use, in plain words.
+    #[serde(default)]
+    pub in_practice: String,
     pub fix_pattern: String,
     /// Everything needed to replay the finding. Engine specific.
     pub repro: serde_json::Value,

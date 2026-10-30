@@ -19,6 +19,7 @@ static MINE01: AttackMeta = AttackMeta {
     catches: "coinbase reward not checked against subsidy + fees",
     severity: Severity::High,
     fix_pattern: "consensus must reject any block whose coinbase pays more than the expected reward",
+    in_practice: "A miner pays themselves one sompi more than the block reward allows. If the node accepts it, new coins appear out of nothing.",
 };
 
 impl NodeAttack for Mine01 {

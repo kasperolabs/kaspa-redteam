@@ -173,6 +173,8 @@ h3.sec { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; colo
 .ftitle { font-weight: 600; }
 .fpath { color: var(--muted); font-size: 13px; margin-left: auto; font-family: var(--mono); }
 .finding p { margin: 0 0 12px; }
+.prac { color: var(--muted); font-size: 14px; margin-top: -4px; }
+.prac b { color: var(--ink); font-weight: 600; }
 .fix { background: var(--code-bg); border-radius: 6px; padding: 10px 12px; font: 13px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .fix::before { content: "fix pattern"; display: block; font: 600 10px var(--sans); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 4px; }
 .finding .dl { margin-top: 10px; }
@@ -650,6 +652,7 @@ kaspa-redteam vault.sil -v</pre>
         h += `<div class="card finding">
           <div class="fhead"><span class="sev ${esc(f.severity)}">${esc(f.severity)}</span><span class="fid">${esc(f.id)}</span><span class="ftitle">${esc(f.title)}</span><span class="fpath">path ${esc(f.subject)}</span></div>
           <p>${esc(f.explanation.charAt(0).toUpperCase() + f.explanation.slice(1))}</p>
+          ${f.in_practice ? `<p class="prac"><b>How this happens in practice.</b> ${esc(f.in_practice)}</p>` : ""}
           <div class="fix">${esc(f.fix_pattern)}</div>
           ${file ? `<div class="dl"><button class="linkbtn" data-file="${i}">Download the repro (${esc(file.name)})</button><span class="hint" style="margin:0">replay: <code>kaspa-redteam replay ${esc(file.name.split("/").pop())}</code></span></div>` : ""}
         </div>`;
@@ -713,7 +716,7 @@ kaspa-redteam vault.sil -v</pre>
     $("ver").textContent = "v" + j.tool_version;
     $("libver").textContent = `v${j.library_version} · ${j.attacks.length} attacks`;
     $("libtable").tBodies[0].innerHTML = j.attacks.map(a =>
-      `<tr><td class="id">${esc(a.id)}</td><td><span class="sev ${esc(a.severity)}">${esc(a.severity)}</span></td><td>${esc(a.title)}<div class="hint" style="margin:2px 0 0">${esc(a.target)} · ${esc(a.pack)}</div></td><div class="only-narrow">catches: ${esc(a.catches)}</div></td><td class="catches hide-narrow">${esc(a.catches)}</td></tr>`).join("");
+      `<tr><td class="id">${esc(a.id)}</td><td><span class="sev ${esc(a.severity)}">${esc(a.severity)}</span></td><td>${esc(a.title)}<div class="hint" style="margin:2px 0 0">${esc(a.target)} · ${esc(a.pack)}</div><div class="only-narrow">catches: ${esc(a.catches)}<div class="hint">${esc(a.in_practice || "")}</div></div></td><td class="catches hide-narrow">${esc(a.catches)}<div class="hint" style="margin-top:4px">${esc(a.in_practice || "")}</div></td></tr>`).join("");
   }).catch(() => { $("libtable").tBodies[0].innerHTML = `<tr><td colspan="4" class="why">Could not load the library.</td></tr>`; });
 })();
 </script>

@@ -81,6 +81,9 @@ pub fn render_terminal(r: &RunReport, style: &TermStyle, verbose: bool) -> Strin
         };
         let _ = writeln!(o, "{sev} {} {}", style.bold(&f.id), f.title);
         let _ = writeln!(o, "  Path `{}`: {}", f.subject, f.explanation);
+        if !f.in_practice.is_empty() {
+            let _ = writeln!(o, "  In practice: {}", f.in_practice);
+        }
         if let Some(file) = f.repro.get("file").and_then(|v| v.as_str()) {
             let _ = writeln!(o, "  Repro: {file}   replay: kaspa-redteam replay {file}");
         }
@@ -137,6 +140,7 @@ pub fn write_findings(r: &mut RunReport, dir: &Path) -> std::io::Result<Vec<Stri
                     "spend_path": f.subject,
                     "title": f.title,
                     "explanation": f.explanation,
+                    "in_practice": f.in_practice,
                     "fix_pattern": f.fix_pattern,
                     "replay_cmd": format!("kaspa-redteam replay {display}"),
                     "repro": f.repro,
