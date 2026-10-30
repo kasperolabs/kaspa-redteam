@@ -401,7 +401,8 @@ kaspa-redteam vault.sil -v</pre>
   function stopRunning() { clearInterval(timer); $("status").innerHTML = ""; }
   function showError(msg) {
     stopRunning();
-    $("status").innerHTML = `<div class="card err"><b>The scan did not run</b>${esc(msg)}</div>`;
+    const syntax = /^syntax error/i.test(msg);
+    $("status").innerHTML = `<div class="card err"><b>${syntax ? "The contract has a syntax error, so the scan did not run" : "The scan did not run"}</b>${esc(msg)}</div>`;
   }
 
   $("form").onsubmit = async e => {

@@ -60,6 +60,14 @@ Common flags: `--out DIR` (where finding files go, default `findings/`), `--no-c
 
 Exit codes: `0` clean, `1` findings, `2` error.
 
+### Older SilverScript
+
+The language still changes, and the tool compiles with the current SilverScript. A file that does not parse is reported as a syntax error, in those words. For the changes it knows, the tool tests the file rewritten in current syntax and says so in the report:
+
+- Aug 3, 2026 (SilverScript PR #193): struct literals and destructuring name their type. `State s = { a: x }` is now `State s = State { a: x }`, `validateOutputState(0, { .. })` is `validateOutputState(0, State { .. })`, and `{ a: int x } = readInputState(1);` is `State { a: int x } = readInputState(1);`.
+
+What is tested is today's compile. A contract already on chain keeps the bytecode an older compiler made, which may differ; to test exactly what is deployed, give its real transactions with `--baseline`.
+
 ### Projects: several contracts that work together
 
 Real systems are often more than one `.sil` file: a treasury and its department funds, a token and the market that sells it. Give all the files in one run and they are treated as one program:

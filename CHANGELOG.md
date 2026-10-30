@@ -1,5 +1,9 @@
 # Changelog
 
+## Tool 0.4.2 (library 0.3.1)
+
+- Older SilverScript: a file that does not parse is reported as a syntax error, in those words, with what changed in the language when the tool recognizes it. Files using struct literals from before Aug 3, 2026 (`State s = { .. }`, SilverScript PR #193) are tested rewritten in current syntax, with a note in the report saying so and that deployed bytecode from an older compiler may differ.
+
 ## Tool 0.4.1 (library 0.3.1)
 
 - OUT-04 (new): a permissionless path that fixes its payouts but not the coin's value lets whoever spends it keep the rest. For a secret-released path that includes anyone who copies the secret from the mempool.

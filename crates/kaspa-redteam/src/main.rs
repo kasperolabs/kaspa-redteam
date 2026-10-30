@@ -149,6 +149,7 @@ fn real_main() -> Result<ExitCode> {
             }
             let source = std::fs::read_to_string(&file).with_context(|| format!("read {}", file.display()))?;
             let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let (source, _) = redteam_covenant::legacy::prepare(&name, &source)?;
             let contract = redteam_covenant::contract::Contract::load(&name, &source, &overrides)?;
             let judge = redteam_covenant::sandbox::Judge::new();
             let paths = redteam_covenant::baseline::search_all(&contract, &judge);
@@ -191,13 +192,15 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
     let (contract, paths, notes) = match a.files.first() {
         Some(file) => {
             let source = std::fs::read_to_string(file).with_context(|| format!("read {}", file.display()))?;
+            let (source, mut legacy) = redteam_covenant::legacy::prepare(&short(file), &source)?;
             if a.no_tune {
                 let c = redteam_covenant::contract::Contract::load(&short(file), &source, &overrides)?;
                 let p = redteam_covenant::baseline::search_all(&c, &judge);
-                (c, p, vec![])
+                (c, p, legacy)
             } else {
                 let t = redteam_covenant::tune::tune(&short(file), &source, &overrides, &judge)?;
-                (t.contract, t.paths, t.notes)
+                legacy.extend(t.notes);
+                (t.contract, t.paths, legacy)
             }
         }
         None => {
@@ -231,13 +234,19 @@ fn project(a: &ScanArgs, overrides: &BTreeMap<String, String>) -> Result<ExitCod
         redteam_covenant::baseline::set_deadline(started + std::time::Duration::from_secs(s));
     }
     let mut files = Vec::new();
+    let mut legacy = Vec::new();
     for f in &a.files {
         let source = std::fs::read_to_string(f).with_context(|| format!("read {}", f.display()))?;
         let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.display().to_string());
+        let (source, notes) = redteam_covenant::legacy::prepare(&name, &source)?;
+        legacy.push(notes);
         files.push(redteam_covenant::project::ProjectFile { name, source });
     }
     let judge = redteam_covenant::sandbox::Judge::new();
     let (links, mut reports) = redteam_covenant::project::run(&files, overrides, &a.common.only, &judge)?;
+    for (r, notes) in reports.iter_mut().zip(legacy) {
+        r.notes.splice(0..0, notes);
+    }
     let c = &a.common;
     let mut any = false;
     for (f, r) in files.iter().zip(reports.iter_mut()) {
