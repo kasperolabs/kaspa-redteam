@@ -50,3 +50,38 @@ fn bridge_family() {
     assert!(bridge.1.contains(&"FAM-06".to_string()), "replay not caught: {:?}", bridge.1);
     assert!(bridge.1.contains(&"FAM-07".to_string()), "second genesis not caught: {:?}", bridge.1);
 }
+
+fn run_pair(dir: &str) -> Vec<(String, Vec<String>, usize, Vec<String>)> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/family").join(dir);
+    let files: Vec<ProjectFile> = ["kcc20.sil", "kcc20-minter.sil"]
+        .iter()
+        .map(|n| ProjectFile { name: n.to_string(), source: std::fs::read_to_string(dir.join(n)).unwrap() })
+        .collect();
+    let (links, reports) = project::run(&files, &BTreeMap::new(), &[], &Judge::new()).unwrap();
+    assert!(links.iter().any(|l| l.via == "expectedTemplateHash"), "template link by role: {links:?}");
+    reports
+        .iter()
+        .map(|r| {
+            let fam_run = r.results.iter().filter(|x| x.id.starts_with("FAM-") && !matches!(x.outcome, redteam_core::Outcome::Skipped { .. })).count();
+            let gaps = r.context["spend_map"].as_array().map(|m| m.iter().filter(|x| x["explored"] != true).map(|x| x["path"].to_string()).collect()).unwrap_or_default();
+            (r.subject_name.clone(), r.findings().map(|f| f.id.clone()).collect(), fam_run, gaps)
+        })
+        .collect()
+}
+
+/// The SilverScript repository's own KCC-20 and minter (another author, another
+/// design): every path explored, the family attacks run and are rejected; with
+/// one check removed, FAM-08 catches it.
+#[test]
+fn upstream_minter_family() {
+    let fixed = run_pair("upstream");
+    for r in &fixed {
+        assert!(r.1.is_empty(), "{}: {:?}", r.0, r.1);
+        assert!(r.3.is_empty(), "{} gaps: {:?}", r.0, r.3);
+    }
+    let minter = fixed.iter().find(|r| r.0 == "kcc20-minter.sil").unwrap();
+    assert!(minter.2 >= 5, "family attacks on the mint: {}", minter.2);
+    let vuln = run_pair("upstream_vulnerable");
+    let minter = vuln.iter().find(|r| r.0 == "kcc20-minter.sil").unwrap();
+    assert!(minter.1.contains(&"FAM-08".to_string()), "minting power not caught: {:?}", minter.1);
+}

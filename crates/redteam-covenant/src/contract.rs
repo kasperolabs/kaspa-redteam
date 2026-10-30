@@ -41,6 +41,8 @@ pub struct Links {
     /// Values taken from another file of the project: a template hash (`kcc20_template`
     /// -> KCC20.sil's template), with the program it came from.
     pub values: BTreeMap<String, (String, Vec<u8>)>,
+    /// Ints taken from another file (a template prefix or suffix length).
+    pub ints: BTreeMap<String, (String, i64)>,
 }
 
 /// A secret the tool knows the preimage of. Constructor hash parameters are
@@ -154,6 +156,10 @@ impl Contract {
                         }
                     }
                     (v, "override".into())
+                }
+                None if links.ints.contains_key(&p.name) => {
+                    let (program, v) = &links.ints[&p.name];
+                    (ArtifactValue::Int(*v), format!("template length of {program}"))
                 }
                 None if links.values.contains_key(&p.name) => {
                     let (program, v) = &links.values[&p.name];

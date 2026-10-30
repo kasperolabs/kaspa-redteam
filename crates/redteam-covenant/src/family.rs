@@ -276,6 +276,35 @@ fn repair(d: &mut Draft, built: &crate::sandbox::Built, f: &FailedCheck, main: &
         d.repaired.insert(k);
         return true;
     }
+    // A number the coin under test's next state carries, compared to the one the
+    // script computed (`newState.amount == amount - minted`): put that one in.
+    let num = |v: &[u8]| -> Option<i64> {
+        if v.len() > 8 {
+            return None;
+        }
+        if v.is_empty() {
+            return Some(0);
+        }
+        let mut n: i64 = 0;
+        for (i, b) in v.iter().enumerate() {
+            n |= ((*b as i64) & if i == v.len() - 1 { 0x7f } else { 0xff }) << (8 * i);
+        }
+        Some(if v[v.len() - 1] & 0x80 != 0 { -n } else { n })
+    };
+    if f.input == 0 && f.op.starts_with("OpNum") {
+        if let (Some(na), Some(nb)) = (num(&f.a), num(&f.b)) {
+            for o in d.plan.outputs.iter_mut() {
+                if let Dest::Successor(st) = &mut o.to {
+                    for (from, to) in [(na, nb), (nb, na)] {
+                        if let Some((_, v)) = st.iter_mut().find(|(_, v)| **v == ArtifactValue::Int(from)) {
+                            *v = ArtifactValue::Int(to);
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
     // An argument of the input under test: swap the bytes it carried.
     if f.input == 0 {
         if let Some(InputSpec::Covenant { args, .. }) = d.plan.inputs.get_mut(0) {
@@ -755,4 +784,438 @@ pub fn explore_genesis(main: &Contract, entry: &str, programs: &[Program], judge
         }
     }
     None
+}
+
+/// Constants of a source: `byte constant X = 0x02;`, `int constant N = 3;`.
+fn source_consts(source: &str) -> BTreeMap<String, ArtifactValue> {
+    let mut m = BTreeMap::new();
+    for l in source.lines() {
+        let l = l.trim();
+        let Some((lhs, rhs)) = l.split_once('=') else { continue };
+        let mut w = lhs.split_whitespace();
+        let (Some(ty), Some(c), Some(name)) = (w.next(), w.next(), w.next()) else { continue };
+        if c != "constant" {
+            continue;
+        }
+        let v = rhs.trim().trim_end_matches(';').trim();
+        let val = match ty {
+            "byte" => v.strip_prefix("0x").and_then(|h| u8::from_str_radix(h, 16).ok()).map(ArtifactValue::Byte),
+            "int" => v.replace('_', "").parse().ok().map(ArtifactValue::Int),
+            "bool" => v.parse().ok().map(ArtifactValue::Bool),
+            _ => None,
+        };
+        if let Some(val) = val {
+            m.insert(name.to_string(), val);
+        }
+    }
+    m
+}
+
+/// What the source requires of a struct-typed name, field by field:
+/// `require(p.f == X)`, `require(p.f)`, `require(!p.f)`. `own_id` stands for
+/// values the source takes from `OpInputCovenantId(this.activeInputIndex)`.
+fn field_requirements(source: &str, p: &str, own_id: &[u8]) -> BTreeMap<String, ArtifactValue> {
+    let consts = source_consts(source);
+    let own_vars: Vec<String> = source
+        .lines()
+        .filter(|l| l.contains("OpInputCovenantId(this.activeInputIndex)") && l.contains('='))
+        .filter_map(|l| l.split('=').next()?.split_whitespace().last().map(str::to_string))
+        .collect();
+    let mut m = BTreeMap::new();
+    for l in source.lines() {
+        let l = l.split("//").next().unwrap_or("").trim();
+        let Some(inner) = l.strip_prefix("require(") else { continue };
+        let inner = inner.trim_end_matches(';').trim_end_matches(')');
+        let (neg, inner) = match inner.strip_prefix('!') {
+            Some(r) => (true, r),
+            None => (false, inner),
+        };
+        let Some(rest) = inner.strip_prefix(&format!("{p}.")) else { continue };
+        let field: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+        let tail = rest[field.len()..].trim();
+        if tail.is_empty() {
+            m.insert(field, ArtifactValue::Bool(!neg));
+        } else if let Some(x) = tail.strip_prefix("==") {
+            let x = x.trim().trim_end_matches(')');
+            if let Some(v) = consts.get(x) {
+                m.insert(field, v.clone());
+            } else if own_vars.iter().any(|o| o == x) || x.contains("OpInputCovenantId(this.activeInputIndex)") {
+                m.insert(field, ArtifactValue::Bytes(own_id.to_vec()));
+            }
+        }
+    }
+    m
+}
+
+/// The branch a program takes when its owner is a covenant id: in
+/// `if (identifierType == IDENTIFIER_COVENANT_ID) { require(OpCovInputCount(ownerIdentifier) > 0); }`
+/// the selector field and its value.
+fn cov_branch(c: &Contract) -> Option<(String, ArtifactValue)> {
+    let consts = source_consts(&c.source);
+    let lines: Vec<&str> = c.source.lines().collect();
+    for (i, l) in lines.iter().enumerate() {
+        if !(l.contains("OpCovInputCount(") && cov_fields(c).iter().any(|f| l.contains(&format!("({f})")))) {
+            continue;
+        }
+        for back in lines[..i].iter().rev().take(4) {
+            let b = back.trim();
+            if let Some(at) = b.find("if") {
+                let cond = &b[at..];
+                let cond = cond.trim_start_matches("if").trim().trim_start_matches('(');
+                if let Some((lhs, rhs)) = cond.split_once("==") {
+                    let lhs = lhs.trim().to_string();
+                    let rhs = rhs.trim().trim_end_matches('{').trim().trim_end_matches(')').trim();
+                    if let Some(v) = consts.get(rhs) {
+                        return Some((lhs, v.clone()));
+                    }
+                }
+                break;
+            }
+        }
+    }
+    None
+}
+
+/// The other family shape: the coin under test controls a coin of another
+/// program by covenant id (an owner field set to its id) and passes the new
+/// coins of that program as typed arguments it checks field by field (a
+/// minter with `minterKcc20NewState`, `recipientKcc20NewState`). The draft
+/// takes those requirements from the source; the controlled coin spends with
+/// its own entry and lists the same new coins.
+pub fn explore_owned(main: &Contract, entry: &str, programs: &[Program], judge: &Judge) -> Option<(PathStatus, Vec<String>)> {
+    let me = main.entry(entry)?;
+    let main_cov = cov_fields(main);
+    let init = main.initial_state.clone()?;
+    let foreign: Vec<(String, String)> = me
+        .params
+        .iter()
+        .filter_map(|p| match &p.ty {
+            TypeArtifact::Struct { name } if name != "State" => Some((p.name.clone(), name.clone())),
+            _ => None,
+        })
+        .collect();
+    if main_cov.is_empty() || foreign.is_empty() {
+        return None;
+    }
+    let (pov_daa, block_time) = crate::baseline::pov(main);
+    let main_id = crate::sandbox::sandbox_covenant_id();
+    let debug = std::env::var_os("REDTEAM_DEBUG").is_some();
+    for sib in programs.iter().filter(|p| p.contract.is_stateful() && !cov_fields(&p.contract).is_empty()) {
+        let mut state = init.clone();
+        for f in &main_cov {
+            state.insert(f.clone(), ArtifactValue::Bytes(sib.cov_id.to_vec()));
+        }
+        // The entry's own requirements on the state it starts from:
+        // `require(initialized)`, `require(!paused)`.
+        if let Some(body) = crate::tune::entry_body(&main.source, entry) {
+            for l in body.lines() {
+                let l = l.split("//").next().unwrap_or("").trim();
+                let Some(inner) = l.strip_prefix("require(") else { continue };
+                let inner = inner.trim_end_matches(';').trim_end_matches(')').trim();
+                let (neg, name) = match inner.strip_prefix('!') {
+                    Some(r) => (true, r.trim()),
+                    None => (false, inner),
+                };
+                if matches!(state.get(name), Some(ArtifactValue::Bool(_))) {
+                    state.insert(name.to_string(), ArtifactValue::Bool(!neg));
+                }
+            }
+        }
+        // The controlled coin: owned by the coin under test's covenant id, on the
+        // branch that checks that ownership.
+        let mut sib_state = sib.contract.initial_state.clone()?;
+        let sib_default = sib_state.clone();
+        for f in cov_fields(&sib.contract) {
+            sib_state.insert(f, ArtifactValue::Bytes(main_id.as_bytes().to_vec()));
+        }
+        if let Some((sel, v)) = cov_branch(&sib.contract) {
+            sib_state.insert(sel, v);
+        }
+        // Each typed argument's required fields; the one that keeps the owner is
+        // the controlled coin's continuation, and its requirements apply to the
+        // coin itself too (a minter stays a minter).
+        let reqs: Vec<BTreeMap<String, ArtifactValue>> =
+            foreign.iter().map(|(p, _)| field_requirements(&main.source, p, &main_id.as_bytes())).collect();
+        let owner_fields = cov_fields(&sib.contract);
+        let cont = reqs.iter().position(|r| owner_fields.iter().any(|f| r.get(f) == Some(&ArtifactValue::Bytes(main_id.as_bytes().to_vec()))));
+        if let Some(k) = cont {
+            for (f, v) in &reqs[k] {
+                if sib_state.contains_key(f) {
+                    sib_state.insert(f.clone(), v.clone());
+                }
+            }
+        }
+        let depositor = {
+            let mut w = crate::wallets::Wallets::new();
+            let i = w.party("depositor");
+            w.parties[i].xonly().to_vec()
+        };
+        let cells: Vec<StateValues> = reqs
+            .iter()
+            .enumerate()
+            .map(|(k, r)| {
+                let mut st = sib_state.clone();
+                if Some(k) != cont {
+                    // A recipient: a key the tool holds, the program's default owner kind.
+                    for f in &owner_fields {
+                        st.insert(f.clone(), ArtifactValue::Bytes(depositor.clone()));
+                    }
+                    if let Some((sel, _)) = cov_branch(&sib.contract) {
+                        if let Some(v) = sib_default.get(&sel) {
+                            st.insert(sel, v.clone());
+                        }
+                    }
+                    if let Some(ArtifactValue::Int(a)) = st.get_mut("amount") {
+                        *a = 100_000_000;
+                    }
+                }
+                for (f, v) in r {
+                    if st.contains_key(f) {
+                        st.insert(f.clone(), v.clone());
+                    }
+                }
+                st
+            })
+            .collect();
+        let sib_redeem = encode_state(&sib.contract, &sib_state)?;
+        let sib_spk = pay_to_script_hash_script(&sib_redeem);
+        let sib_binding = Some(CovenantBinding::new(1, Hash::from_bytes(sib.cov_id)));
+        // The coin under test's arguments.
+        let owner_party = main.wallets.parties.first().map(|_| KeyRef::Party(0)).unwrap_or(KeyRef::Attacker);
+        let mut args = Vec::new();
+        let mut fi = 0;
+        for p in &me.params {
+            args.push(match &p.ty {
+                TypeArtifact::Sig => ArgRecipe::Sig(owner_party),
+                TypeArtifact::Struct { name } if name == "State" => {
+                    ArgRecipe::States { inputs: false, array: false, item: "State".into() }
+                }
+                TypeArtifact::Struct { name } => {
+                    let fields = main.struct_fields(name)?;
+                    let v = struct_obj(&fields, &cells[fi]);
+                    fi += 1;
+                    ArgRecipe::Value(v)
+                }
+                ty => ArgRecipe::Value(crate::sandbox::zero_value(ty)),
+            });
+        }
+        let value = crate::sandbox::COVENANT_VALUE;
+        let sib_value = 100_000_000u64;
+        let mut outputs = vec![OutputSpec::new(value - BASE_FEE, Dest::Successor(state.clone()))];
+        let mut redeems = BTreeMap::new();
+        for (k, st) in cells.iter().enumerate() {
+            let r = encode_state(&sib.contract, st)?;
+            outputs.push(OutputSpec { value: sib_value, to: Dest::Raw(pay_to_script_hash_script(&r)), covenant: sib_binding, own: true });
+            redeems.insert(k + 1, r);
+        }
+        outputs.push(OutputSpec::new(sib_value - BASE_FEE, Dest::Key(KeyRef::Attacker)));
+        for sib_entry in sib.contract.entries.iter().filter(|e| e.params.iter().any(|p| matches!(p.ty, TypeArtifact::DynamicArray { .. }))) {
+            let mut plan = SpendPlan::simple(
+                vec![
+                    InputSpec::Covenant { entry: entry.to_string(), args: args.clone(), value, sequence: 0, state: Some(state.clone()) },
+                    InputSpec::Raw(RawInput {
+                        outpoint: None,
+                        signature_script: vec![],
+                        sequence: 0,
+                        sig_op_count: 0,
+                        compute_budget: 2_000,
+                        entry: UtxoEntry::new(sib_value, sib_spk.clone(), UTXO_DAA, false, Some(Hash::from_bytes(sib.cov_id))),
+                        target: false,
+                        signed: false,
+                        resign: None,
+                    }),
+                    InputSpec::P2pk { owner: KeyRef::Attacker, value: sib_value * cells.len() as u64 },
+                ],
+                outputs.clone(),
+                0,
+                pov_daa,
+                block_time,
+            );
+            plan.version = 1;
+            let mut d = Draft { plan, sib: 1, sib_entry: sib_entry.name.clone(), sib_args: vec![], redeems: redeems.clone(), repaired: Default::default() };
+            for _ in 0..16 {
+                let mut sa = sibling_args(sib, &sib_entry.name, programs, &d)?;
+                // Signature-typed arguments of the controlled coin: never checked on
+                // the covenant-id branch, but they must be well formed.
+                for (v, p) in sa.iter_mut().zip(sib.contract.entry(&sib_entry.name)?.params.iter()) {
+                    if matches!(p.ty, TypeArtifact::Sig) {
+                        *v = ArtifactValue::Bytes(vec![0; 65]);
+                    }
+                }
+                d.sib_args = sa;
+                rebuild_sibling(&mut d, sib, &sib_state)?;
+                let (verdict, built) = judge.run(main, &d.plan);
+                if let Verdict::Accepted { .. } = verdict {
+                    let mut notes = vec![format!(
+                        "family: `{entry}` was spent together with a coin of {} it controls by covenant id (`{}`), creating {} new coin(s) of it from its typed arguments.",
+                        sib.file, sib_entry.name, cells.len()
+                    )];
+                    // New coins that are not the controlled coin's continuation: spent next by their owner.
+                    for k in 0..cells.len() {
+                        if Some(k) != cont {
+                            if let Some(r) = d.redeems.get(&(k + 1)) {
+                                notes.push(format!("minted: {}|{}|{entry}+{}|{}", sib.file, faster_hex::hex_string(r), sib_entry.name, k + 1));
+                            }
+                        }
+                    }
+                    let variants = owned_variants(main, &d, sib, &sib_state, programs, &me.params, &cells, cont, &state);
+                    let status = PathStatus {
+                        entry: format!("{entry}+{}", sib_entry.name),
+                        name: entry.to_string(),
+                        state: Some(state.clone()),
+                        baseline: Some(Baseline { plan: d.plan, signers: vec![owner_party], secrets: vec![], lock: None, variants }),
+                        unexplored_reason: None,
+                        tries: 1,
+                        imported: false,
+                    };
+                    return Some((status, notes));
+                }
+                let Some(built) = built else {
+                    if debug {
+                        eprintln!("owned {entry}+{}: {verdict:?}", sib_entry.name);
+                    }
+                    break;
+                };
+                let Some(f) = (0..d.plan.inputs.len()).find_map(|i| trace_failure(&built, i)) else { break };
+                if debug {
+                    eprintln!("owned {entry}+{}: input {} {} a={} b={}", sib_entry.name, f.input, f.op, faster_hex::hex_string(&f.a[..f.a.len().min(40)]), faster_hex::hex_string(&f.b[..f.b.len().min(40)]));
+                }
+                if !repair(&mut d, &built, &f, main) {
+                    break;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Hostile versions of an owned-family spend. The coin under test's typed
+/// arguments, the controlled coin's arguments, the new coins and the next
+/// state are all rebuilt to agree, so only the rules decide. The signer is the
+/// coin's own owner: these ask what the person who may mint can get away with.
+#[allow(clippy::too_many_arguments)]
+fn owned_variants(
+    main: &Contract,
+    d: &Draft,
+    sib: &Program,
+    sib_state: &StateValues,
+    programs: &[Program],
+    params: &[crate::contract::EntryParam],
+    cells: &[StateValues],
+    cont: Option<usize>,
+    state: &StateValues,
+) -> Vec<(&'static str, String, SpendPlan, String)> {
+    let mut out = Vec::new();
+    // Rebuild a plan from (possibly changed) new coins and next state.
+    let build = |cells: &[StateValues], next: Option<&StateValues>, extra: Option<StateValues>, family: Option<CovenantBinding>| -> Option<SpendPlan> {
+        let mut v = Draft {
+            plan: d.plan.clone(),
+            sib: d.sib,
+            sib_entry: d.sib_entry.clone(),
+            sib_args: vec![],
+            redeems: BTreeMap::new(),
+            repaired: d.repaired.clone(),
+        };
+        if let Some(InputSpec::Covenant { args, .. }) = v.plan.inputs.get_mut(0) {
+            let mut fi = 0;
+            for (a, p) in args.iter_mut().zip(params) {
+                if let TypeArtifact::Struct { name } = &p.ty {
+                    if name != "State" {
+                        let fields = main.struct_fields(name)?;
+                        *a = ArgRecipe::Value(struct_obj(&fields, &cells[fi]));
+                        fi += 1;
+                    }
+                }
+            }
+        }
+        for (k, st) in cells.iter().enumerate() {
+            let r = encode_state(&sib.contract, st)?;
+            v.plan.outputs[k + 1].to = Dest::Raw(pay_to_script_hash_script(&r));
+            v.redeems.insert(k + 1, r);
+        }
+        if let Some(n) = next {
+            v.plan.outputs[0].to = Dest::Successor(n.clone());
+        }
+        if let Some(e) = extra {
+            let r = encode_state(&sib.contract, &e)?;
+            let at = cells.len() + 1;
+            v.plan.outputs.insert(at, OutputSpec { value: 100_000_000, to: Dest::Raw(pay_to_script_hash_script(&r)), covenant: family.or(d.plan.outputs[1].covenant), own: true });
+            v.redeems.insert(at, r);
+            if let Some(InputSpec::P2pk { value, .. }) = v.plan.inputs.iter_mut().find(|i| matches!(i, InputSpec::P2pk { .. })) {
+                *value += 100_000_000;
+            }
+        }
+        let mut sa = sibling_args(sib, &v.sib_entry, programs, &v)?;
+        for (x, p) in sa.iter_mut().zip(sib.contract.entry(&v.sib_entry)?.params.iter()) {
+            if matches!(p.ty, TypeArtifact::Sig) {
+                *x = ArtifactValue::Bytes(vec![0; 65]);
+            }
+        }
+        v.sib_args = sa;
+        rebuild_sibling(&mut v, sib, sib_state)?;
+        Some(v.plan)
+    };
+    let next = match &d.plan.outputs[0].to {
+        Dest::Successor(s) => s.clone(),
+        _ => state.clone(),
+    };
+    let allowance = match state.get("amount") {
+        Some(ArtifactValue::Int(a)) => *a,
+        _ => 0,
+    };
+    let recipient = (0..cells.len()).find(|k| Some(*k) != cont);
+    if let Some(r) = recipient {
+        // More than the allowance: the books say what is left, the coin says more.
+        let mut c2 = cells.to_vec();
+        if let Some(ArtifactValue::Int(a)) = c2[r].get_mut("amount") {
+            *a += allowance + 100_000_000;
+            let mut n2 = next.clone();
+            if let Some(ArtifactValue::Int(left)) = n2.get_mut("amount") {
+                *left -= allowance + 100_000_000;
+            }
+            if let Some(p) = build(&c2, Some(&n2), None, None) {
+                out.push(("FAM-01", format!("output {} mints more than the allowance left", r + 1), p,
+                    format!("the coin's owner minted more than its remaining allowance ({}) and the books went below zero, and the family accepted it.", crate::kas(allowance as u64))));
+            }
+        }
+        // A second coin no argument describes.
+        if let Some(p) = build(cells, Some(&next), Some(cells[r].clone()), None) {
+            out.push(("FAM-03", "a coin of the family that no argument describes".into(), p,
+                "an extra new coin, not among the ones the coin under test checked, was created in the same transaction and accepted. Tokens can be minted outside the books.".into()));
+        }
+        // The recipient's coin in the wrong family.
+        if let Some(mut p) = build(cells, Some(&next), None, None) {
+            p.outputs[r + 1].covenant = Some(CovenantBinding::new(0, crate::sandbox::sandbox_covenant_id()));
+            out.push(("FAM-04", format!("output {} in the wrong covenant family", r + 1), p,
+                format!("the new coin at output {} was created under the coin under test's own covenant id instead of the token's family, and the transaction was accepted.", r + 1)));
+        }
+        // Minting power handed to the recipient.
+        let mut c3 = cells.to_vec();
+        if let (Some(k), Some(ArtifactValue::Bool(_))) = (cont, cells[r].get("isMinter").or(None)) {
+            let _ = k;
+            c3[r].insert("isMinter".into(), ArtifactValue::Bool(true));
+            if let Some(p) = build(&c3, Some(&next), None, None) {
+                out.push(("FAM-08", format!("output {} given the minting power", r + 1), p,
+                    "a new coin for a recipient carries the authority flag, and the family accepted it. Whoever receives it can mint too.".into()));
+            }
+        }
+    }
+    // The controlled coin does not stay under the coin under test's control.
+    if let Some(k) = cont {
+        let mut c4 = cells.to_vec();
+        let attacker = main.wallets.attacker.xonly().to_vec();
+        for f in cov_fields(&sib.contract) {
+            c4[k].insert(f, ArtifactValue::Bytes(attacker.clone()));
+        }
+        if let Some((sel, _)) = cov_branch(&sib.contract) {
+            if let Some(v) = sib.contract.initial_state.as_ref().and_then(|s| s.get(&sel)) {
+                c4[k].insert(sel, v.clone());
+            }
+        }
+        if let Some(p) = build(&c4, Some(&next), None, None) {
+            out.push(("FAM-05", "the controlled coin handed to the attacker".into(), p,
+                "the coin the coin under test controls by covenant id continued with the attacker's key as owner, and the family accepted it. The minting authority can be taken away from the contract.".into()));
+        }
+    }
+    out
 }

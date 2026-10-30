@@ -53,8 +53,8 @@ macro_rules! fam {
     };
 }
 
-fam!(FAM01, "FAM-01", "Mint more than the data says",
-    "new coins' amounts not checked against what the proof or data allows",
+fam!(FAM01, "FAM-01", "Mint more than allowed",
+    "new coins' amounts not checked against what the proof, data or allowance permits",
     "validateOutputStateWithTemplate(idx, Cell { amount: amount_from_journal, ... }, prefix, suffix, template);  // in the program that holds the proof",
     "Whoever relays a valid proof or reading writes a bigger amount into the coin it creates. The mint authority checks only that the coin is well formed; the amount has to be checked where the proof is.",
     40);
@@ -88,3 +88,8 @@ fam!(FAM07, "FAM-07", "Start the family a second time",
     "require(prev_state.token == ZERO32);  // and record the new family id in the successor state",
     "Anyone runs the start-up path again and creates a second family of the same program next to the real one, for example a second mint authority.",
     46);
+fam!(FAM08, "FAM-08", "Hand out the minting power",
+    "new coins allowed to carry the authority (a minter flag, an owner by covenant id)",
+    "require(!recipientState.isMinter);  // only the authority's own continuation may carry it",
+    "A recipient gets a coin that can mint, and from then on mints as much as they like. The token's supply is no longer controlled by the contract.",
+    47);

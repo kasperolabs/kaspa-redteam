@@ -1,5 +1,13 @@
 # Changelog
 
+## Tool 0.7.0 (library 0.6.0)
+
+- Templates link by role: the template argument of `readInputStateWithTemplate` / `validateOutputStateWithTemplate` / `validateOutputStateWithInputTemplate` gets the other program's template hash whatever it is called, and length arguments in the same call get its prefix and suffix lengths.
+- A second family shape: a program that controls another program's coin by covenant id and passes the new coins as typed arguments (a minter). Requirements are read from the source (field checks on the arguments, the ownership branch, the entry's own state checks); numbers the next state must carry come from the script's comparison.
+- FAM-08: hand out the minting power. FAM-01 is now "Mint more than allowed" (proof, data or allowance).
+- Benchmark two: the SilverScript repository's own KCC-20 and minter (`fixtures/family/upstream`, ISC). Every path explored on both files, minted coins included; a copy without the recipient check is caught by FAM-08.
+- Fixes: a path is tried for a family spend once, even when it appears in several states.
+
 ## Tool 0.6.1 (library 0.5.0)
 
 - Minted coins: both KCC-20 paths explored (`minted:transfer`, and `minted:transfer_delegator` pairing two minted coins); the program's own bytes carry the minted state. The ETH bridge project now has no unexplored path in any file (tests/family.rs checks it).
@@ -145,6 +153,10 @@
 - Report time now includes the search.
 
 # Attack library changelog
+
+## 0.6.0
+
+- FAM-08: hand out the minting power. FAM-01 renamed "Mint more than allowed".
 
 ## 0.5.0
 

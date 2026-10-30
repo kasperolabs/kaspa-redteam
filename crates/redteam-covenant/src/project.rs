@@ -139,6 +139,44 @@ pub fn detect(files: &[ProjectFile], overrides: &BTreeMap<String, String>) -> Re
                 links.push(Link { from: a.file.clone(), via: arg.name.clone(), to: b.file.clone(), kind: "template" });
             }
         }
+        // Templates by role: the template argument of `readInputStateWithTemplate`,
+        // `validateOutputStateWithTemplate` or `validateOutputStateWithInputTemplate`
+        // is another program of the project whatever it is called; with one other
+        // program to choose from, it is that one. Length arguments in the same
+        // call get that program's prefix and suffix lengths.
+        let linked_names: Vec<String> = per_file[ai].values.keys().cloned().collect();
+        for call in template_calls(&a.contract.source) {
+            let Some(tpl) = call.last().cloned() else { continue };
+            let is_param = |n: &str| a.contract.args.iter().any(|x| x.name == n && x.origin != "override");
+            if !is_param(&tpl) || linked_names.contains(&tpl) && !per_file[ai].values.contains_key(&tpl) {
+                continue;
+            }
+            let others: Vec<usize> =
+                (0..compiled.len()).filter(|bi| *bi != ai && !compiled[*bi].template.is_empty()).collect();
+            let bi = match per_file[ai].values.get(&tpl) {
+                Some((prog, _)) => match compiled.iter().position(|c| &c.contract.contract_name == prog) {
+                    Some(i) => i,
+                    None => continue,
+                },
+                None if others.len() == 1 => others[0],
+                None => continue,
+            };
+            let b = &compiled[bi];
+            if !per_file[ai].values.contains_key(&tpl) {
+                per_file[ai].values.insert(tpl.clone(), (b.contract.contract_name.clone(), b.template.clone()));
+                links.push(Link { from: a.file.clone(), via: tpl.clone(), to: b.file.clone(), kind: "template" });
+            }
+            if call.len() >= 4 {
+                let (pl, sl) = (&call[call.len() - 3], &call[call.len() - 2]);
+                if let Some((pre, suf)) = crate::family::template_parts(&b.contract) {
+                    for (name, v) in [(pl, pre.len()), (sl, suf.len())] {
+                        if a.contract.args.iter().any(|x| &x.name == name && x.ty == "int" && x.origin != "override") {
+                            per_file[ai].ints.insert(name.clone(), (b.contract.contract_name.clone(), v as i64));
+                        }
+                    }
+                }
+            }
+        }
         // Templates: a pinned hash that is another file's program.
         let mut pinned: Vec<(String, Vec<u8>)> = hash_literals(&a.contract.source);
         for arg in &a.contract.args {
@@ -204,15 +242,15 @@ pub fn run(
                 })
                 .collect();
             let names: Vec<String> = {
-                let mut v: Vec<String> = t.paths.iter().map(|p| p.name.clone()).collect();
-                v.dedup();
-                v
+                let mut seen = std::collections::BTreeSet::new();
+                t.paths.iter().map(|p| p.name.clone()).filter(|n| seen.insert(n.clone())).collect()
             };
             for name in names {
                 // Not gated on the search deadline: a family attempt is a handful of
                 // runs, and it is the one way into these paths.
                 let found = crate::family::explore(&t.contract, &name, &programs, judge)
-                    .or_else(|| crate::family::explore_genesis(&t.contract, &name, &programs, judge));
+                    .or_else(|| crate::family::explore_genesis(&t.contract, &name, &programs, judge))
+                    .or_else(|| crate::family::explore_owned(&t.contract, &name, &programs, judge));
                 if let Some((status, notes)) = found {
                     // A path no single-program spend opened is replaced; an explored
                     // one gains its family variant (a mint next to a heartbeat).
@@ -366,4 +404,39 @@ fn merge_report(into: &mut RunReport, extra: RunReport) {
         }
     }
     into.millis += extra.millis;
+}
+
+/// Arguments of every template call in a source, as written (identifiers).
+fn template_calls(source: &str) -> Vec<Vec<String>> {
+    let mut out = Vec::new();
+    for name in ["readInputStateWithTemplate(", "validateOutputStateWithTemplate(", "validateOutputStateWithInputTemplate("] {
+        let mut from = 0;
+        while let Some(at) = source[from..].find(name) {
+            let start = from + at + name.len();
+            let mut depth = 1;
+            let mut args = Vec::new();
+            let mut cur = String::new();
+            for ch in source[start..].chars() {
+                match ch {
+                    '(' | '{' | '[' => {
+                        depth += 1;
+                        cur.push(ch);
+                    }
+                    ')' | '}' | ']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                        cur.push(ch);
+                    }
+                    ',' if depth == 1 => args.push(std::mem::take(&mut cur).trim().to_string()),
+                    _ => cur.push(ch),
+                }
+            }
+            args.push(cur.trim().to_string());
+            out.push(args);
+            from = start;
+        }
+    }
+    out
 }
