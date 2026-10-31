@@ -271,8 +271,9 @@ fn search_layouts(
     let msg_arg = entry.params.iter().position(|p| matches!(p.ty, TypeArtifact::Bytes));
     let has_datasig = entry.params.iter().any(|p| matches!(p.ty, TypeArtifact::Datasig));
     let mut per_param: Vec<Vec<(ArgRecipe, Option<String>)>> = Vec::new();
+    let text = crate::tune::entry_text(&contract.source, entry_name).unwrap_or_default();
     for p in &entry.params {
-        let body = crate::tune::entry_body(&contract.source, entry_name).unwrap_or("");
+        let body = text.as_str();
         match candidates(contract, body, &p.name, &p.ty, has_datasig, msg_arg) {
             Ok(c) => per_param.push(c),
             Err(why) => {
@@ -293,6 +294,22 @@ fn search_layouts(
         }
         layouts.push((vec![InputSpec::StandIn { target: k, value: STAND_IN_VALUE }], 0));
         layouts.push((vec![InputSpec::StandIn { target: k, value: STAND_IN_VALUE }], 1));
+    }
+    // A coin the entry pins to a party's own address
+    // (`require(tx.inputs[1].scriptPubKey == byte[](userScript))`): that
+    // party's ordinary coin, which only they can sign, sits there.
+    if !funding {
+        let text = crate::tune::entry_text(&contract.source, entry_name).unwrap_or_default();
+        for (k, party) in pinned_input_owners(contract, &text) {
+            if k >= 1 {
+                let mut extra = Vec::new();
+                for _ in 1..k {
+                    extra.push(InputSpec::P2pk { owner: KeyRef::Attacker, value: STAND_IN_VALUE });
+                }
+                extra.push(InputSpec::P2pk { owner: KeyRef::Party(party), value: STAND_IN_VALUE });
+                layouts.insert(1.min(layouts.len()), (extra, 0));
+            }
+        }
     }
     // A plain coin of the spender's own after the covenant, for paths whose
     // outputs must carry more than the covenant coin holds (a successor that
@@ -534,6 +551,16 @@ fn candidates(
                 parties.iter().map(|k| (ArgRecipe::Sig(*k), None)).collect()
             }
         }
+        TypeArtifact::Datasig if !signed_digests(c, body, param).is_empty() => {
+            let keys = if parties.is_empty() { vec![KeyRef::Attacker] } else { parties };
+            let mut out = Vec::new();
+            for d in signed_digests(c, body, param) {
+                for k in keys.iter().take(3) {
+                    out.push((ArgRecipe::DigestSig { key: *k, digest: d.clone() }, None));
+                }
+            }
+            out
+        }
         TypeArtifact::Datasig => {
             let Some(arg) = msg_arg else {
                 return Err("data signature with no byte[] message argument to sign".into());
@@ -575,6 +602,18 @@ fn candidates(
         TypeArtifact::Byte => vec![v(ArtifactValue::Byte(0)), v(ArtifactValue::Byte(1))],
         TypeArtifact::Bytes => {
             let mut out: Vec<_> = Vec::new();
+            // A message signature carried as bytes (`checkMsgSig(datasig(cancelSig),
+            // cancelDigest, user)`): the named party signs the digest the contract holds.
+            let digests = signed_digests(c, body, param);
+            if !digests.is_empty() {
+                let keys = if parties.is_empty() { vec![KeyRef::Attacker] } else { parties.clone() };
+                for d in &digests {
+                    for k in keys.iter().take(3) {
+                        out.push((ArgRecipe::DigestSig { key: *k, digest: d.clone() }, None));
+                    }
+                }
+                return Ok(out);
+            }
             // A ZK covenant: the test proof for the proof argument, and journals
             // that carry a party's key (the usual recipient field) for the journal.
             if c.zk_keys > 0 {
@@ -675,6 +714,99 @@ fn candidates(
             return Err(format!("struct `{name}` is not defined in this file; import a baseline (--baseline)"));
         }
     })
+}
+
+/// Local names for scripts (`byte[36] userScript = new ScriptPubKeyP2PK(user);`)
+/// mapped to the party whose P2PK address they hold.
+pub(crate) fn script_names(c: &Contract, text: &str) -> std::collections::BTreeMap<String, usize> {
+    let mut out = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let l = line.split("//").next().unwrap_or("").trim();
+        let Some((lhs, rhs)) = l.split_once('=') else { continue };
+        let Some(inner) = rhs.trim().strip_prefix("new ScriptPubKeyP2PK(") else { continue };
+        let key = inner.split(')').next().unwrap_or("").trim();
+        let Some(var) = lhs.split_whitespace().last() else { continue };
+        if let Some(p) = c.wallets.parties.iter().position(|w| w.label == key) {
+            out.insert(var.to_string(), p);
+        }
+    }
+    out
+}
+
+/// Input indexes the entry pins to a party's own address, with the party:
+/// `tx.inputs[1].scriptPubKey == byte[](new ScriptPubKeyP2PK(user))`, or the
+/// same through a local name. `!=` pins nothing.
+fn pinned_input_owners(c: &Contract, text: &str) -> Vec<(usize, usize)> {
+    let names = script_names(c, text);
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let l = line.split("//").next().unwrap_or("").trim();
+        let Some(rest) = l.strip_prefix("require(tx.inputs[") else { continue };
+        let Some((idx, rest)) = rest.split_once(']') else { continue };
+        let Ok(k) = idx.trim().parse::<usize>() else { continue };
+        let Some(rhs) = rest.trim_start().strip_prefix(".scriptPubKey") else { continue };
+        let Some(rhs) = rhs.trim_start().strip_prefix("==") else { continue };
+        let rhs = rhs.trim();
+        let inner = rhs.strip_prefix("byte[](").unwrap_or(rhs);
+        let party = if let Some(k2) = inner.strip_prefix("new ScriptPubKeyP2PK(") {
+            let key = k2.split(')').next().unwrap_or("").trim();
+            c.wallets.parties.iter().position(|w| w.label == key)
+        } else {
+            let var = inner.split(')').next().unwrap_or("").trim();
+            names.get(var).copied()
+        };
+        if let Some(p) = party {
+            if !out.contains(&(k, p)) {
+                out.push((k, p));
+            }
+        }
+    }
+    out
+}
+
+/// Digests a message signature in `param` is checked against, when the
+/// contract holds them: `checkMsgSig(datasig(param), d, key)` or
+/// `checkMsgSig(param, d, key)` with `d` a `byte[32]` constructor value or
+/// state field. The signer signs `d` itself (a KIP-5 message hash, say), not a
+/// hash of an argument.
+fn signed_digests(c: &Contract, body: &str, param: &str) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    for line in body.lines().filter(|l| mentions(l, param)) {
+        let Some(at) = line.find("checkMsgSig(") else { continue };
+        // Split the call's arguments at top-level commas.
+        let mut args: Vec<String> = vec![String::new()];
+        let mut depth = 0i32;
+        for ch in line[at + 12..].chars() {
+            match ch {
+                '(' | '[' => depth += 1,
+                ')' | ']' if depth == 0 => break,
+                ')' | ']' => depth -= 1,
+                ',' if depth == 0 => {
+                    args.push(String::new());
+                    continue;
+                }
+                _ => {}
+            }
+            args.last_mut().unwrap().push(ch);
+        }
+        if args.len() != 3 {
+            continue;
+        }
+        let sig = args[0].trim();
+        if sig != param && sig != format!("datasig({param})") {
+            continue;
+        }
+        let d = args[1].trim();
+        let d = d.strip_prefix("byte[32](").and_then(|x| x.strip_suffix(')')).unwrap_or(d).trim();
+        let from_arg = c.args.iter().find(|a| a.name == d).map(|a| a.value.clone());
+        let from_state = c.initial_state.as_ref().and_then(|s| s.get(d).cloned());
+        if let Some(ArtifactValue::Bytes(b)) = from_arg.or(from_state) {
+            if b.len() == 32 && !out.contains(&b) {
+                out.push(b);
+            }
+        }
+    }
+    out
 }
 
 /// Cartesian product ordered by total rank: every parameter's best candidate
@@ -801,7 +933,8 @@ fn output_candidates_for(
     extra_value: u64,
     state: Option<&StateValues>,
 ) -> Vec<Vec<OutputSpec>> {
-    let body = entry.and_then(|e| crate::tune::entry_body(&c.source, e)).unwrap_or("");
+    let text = entry.and_then(|e| crate::tune::entry_text(&c.source, e)).unwrap_or_default();
+    let body = text.as_str();
     let mut out = pinned_shapes(c, body, cov_value + extra_value);
     // A ZK payout to the key a journal names: the whole coin, less a fee, to
     // the keys the journal candidates carry.
@@ -816,8 +949,12 @@ fn output_candidates_for(
 }
 
 /// `tx.outputs[i].scriptPubKey == byte[](new ScriptPubKeyP2PK(name))` and
-/// `tx.outputs[i].value == amount` lines read straight from the entry, plus a
-/// change output where it returns to `tx.inputs[this.activeInputIndex].scriptPubKey`.
+/// `tx.outputs[i].value == amount` lines read straight from the entry (and the
+/// helpers it calls), plus a change output where it returns to
+/// `tx.inputs[this.activeInputIndex].scriptPubKey`. Scripts held in local
+/// names (`byte[36] merchantScript = new ScriptPubKeyP2PK(merchant);`) count
+/// too; a script the source computes at run time (`lockedScript`) may be the
+/// covenant itself or an address it names, so both are tried.
 fn pinned_shapes(c: &Contract, body: &str, total: u64) -> Vec<Vec<OutputSpec>> {
     use std::collections::BTreeMap;
     let ints: BTreeMap<&str, i64> = c
@@ -828,8 +965,30 @@ fn pinned_shapes(c: &Contract, body: &str, total: u64) -> Vec<Vec<OutputSpec>> {
             _ => None,
         })
         .collect();
-    let mut dest: BTreeMap<usize, Dest> = BTreeMap::new();
+    let names = script_names(c, body);
+    // Local names for another contract's address (`new ScriptPubKeyP2SH(nextScriptHash)`).
+    let mut p2sh_names: BTreeMap<String, usize> = BTreeMap::new();
+    for line in body.lines() {
+        let l = line.split("//").next().unwrap_or("").trim();
+        let Some((lhs, rhs)) = l.split_once('=') else { continue };
+        let Some(inner) = rhs.trim().strip_prefix("new ScriptPubKeyP2SH(") else { continue };
+        let h = inner.split(')').next().unwrap_or("").trim();
+        let Some(var) = lhs.split_whitespace().last() else { continue };
+        if let Some(k) = c.stand_ins.iter().position(|s| s.label == h || s.label.starts_with(&format!("{h} "))) {
+            p2sh_names.insert(var.to_string(), k);
+        }
+    }
+    // Every destination a line allows, the last one read first (it is the
+    // one this shape builder always used).
+    let mut dest: BTreeMap<usize, Vec<Dest>> = BTreeMap::new();
     let mut value: BTreeMap<usize, u64> = BTreeMap::new();
+    // Values given as an upper bound (`.value <= fee`): the network fee may come out of them.
+    let mut capped: Vec<usize> = Vec::new();
+    let add = |dest: &mut BTreeMap<usize, Vec<Dest>>, i: usize, d: Dest| {
+        let v = dest.entry(i).or_default();
+        v.retain(|x| *x != d);
+        v.insert(0, d);
+    };
     for line in body.lines() {
         let l = line.trim();
         let Some(rest) = l.strip_prefix("require(tx.outputs[") else { continue };
@@ -838,15 +997,53 @@ fn pinned_shapes(c: &Contract, body: &str, total: u64) -> Vec<Vec<OutputSpec>> {
         if let Some(r) = rest.strip_prefix(".scriptPubKey == byte[](new ScriptPubKeyP2PK(") {
             let name = r.split(')').next().unwrap_or("").trim();
             if let Some(p) = c.wallets.parties.iter().position(|w| w.label == name) {
-                dest.insert(i, Dest::Key(KeyRef::Party(p)));
+                add(&mut dest, i, Dest::Key(KeyRef::Party(p)));
             }
         } else if rest.starts_with(".scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey") {
-            dest.insert(i, Dest::SelfCovenant);
+            add(&mut dest, i, Dest::SelfCovenant);
+        } else if let Some(r) = rest.strip_prefix(".scriptPubKey == ") {
+            let r = r.trim_end_matches(';').trim_end_matches(')').trim();
+            let var = r.strip_prefix("byte[](").unwrap_or(r).trim();
+            if let Some(p) = names.get(var) {
+                add(&mut dest, i, Dest::Key(KeyRef::Party(*p)));
+            } else if let Some(k) = p2sh_names.get(var) {
+                add(&mut dest, i, Dest::StandIn(*k));
+            } else if !var.is_empty() && var.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+                // Computed at run time: the covenant's own address, or one it names.
+                let mut opts: Vec<Dest> = (0..c.stand_ins.len()).map(Dest::StandIn).collect();
+                opts.push(Dest::SelfCovenant);
+                for d in opts {
+                    add(&mut dest, i, d);
+                }
+            }
         } else if let Some(r) = rest.strip_prefix(".value == ").or_else(|| rest.strip_prefix(".value <= ")) {
             let e = r.trim_end_matches(';').trim_end_matches(')').trim();
             let v = ints.get(e).copied().or_else(|| e.replace('_', "").parse().ok());
             if let Some(v) = v.filter(|v| *v > 0) {
                 value.insert(i, v as u64);
+                if rest.starts_with(".value <=") && !capped.contains(&i) {
+                    capped.push(i);
+                }
+            }
+        }
+    }
+    // An output count the entry fixes (`require(tx.outputs.length == 2)`): an
+    // output whose script it does not fix can go anywhere, so it gets every
+    // destination the covenant knows (its own address first).
+    let fixed_count = body
+        .lines()
+        .filter_map(|l| {
+            let r = l.trim().strip_prefix("require(tx.outputs.length == ")?;
+            r.trim_end_matches(';').trim_end_matches(')').trim().parse::<usize>().ok()
+        })
+        .max();
+    if let Some(m) = fixed_count.filter(|m| *m >= 2 && !dest.is_empty()) {
+        for i in 0..m {
+            if !dest.contains_key(&i) {
+                let mut opts = vec![Dest::SelfCovenant];
+                opts.extend((0..c.stand_ins.len()).map(Dest::StandIn));
+                opts.extend((0..c.wallets.parties.len()).map(|p| Dest::Key(KeyRef::Party(p))));
+                dest.insert(i, opts);
             }
         }
     }
@@ -854,23 +1051,53 @@ fn pinned_shapes(c: &Contract, body: &str, total: u64) -> Vec<Vec<OutputSpec>> {
         Some(m) if dest.len() >= 2 && dest.len() == m + 1 => m + 1,
         _ => return vec![],
     };
+    // Destination choices: the first of each, then one index at a time moved
+    // to each of its other choices (a handful of shapes, not a product).
+    let first: Vec<Dest> = (0..n).map(|i| dest[&i][0].clone()).collect();
+    let mut choices = vec![first.clone()];
+    for i in 0..n {
+        for d in dest[&i].iter().skip(1) {
+            let mut ch = first.clone();
+            ch[i] = d.clone();
+            choices.push(ch);
+        }
+    }
     let fixed: u64 = value.values().sum();
+    let open: Vec<usize> = (0..n).filter(|i| !value.contains_key(i)).collect();
     let mut shapes = Vec::new();
-    for fee in [BASE_FEE, 100_000] {
-        if fixed + fee >= total {
-            continue;
+    for ds in &choices {
+        for fee in [BASE_FEE, 100_000] {
+            if fixed + fee >= total {
+                continue;
+            }
+            let rest = total - fixed - fee;
+            let mut shape: Vec<OutputSpec> = Vec::with_capacity(n);
+            for i in 0..n {
+                let v = match value.get(&i) {
+                    Some(v) => *v,
+                    None => rest / open.len().max(1) as u64,
+                };
+                shape.push(OutputSpec::new(v, ds[i].clone()));
+            }
+            shapes.push(shape);
+            // The fee taken from a capped payment, the rest exact
+            // (`out0.value <= fee && out0.value >= fee - maxNetworkFee`, `out1.value == rest`).
+            if let Some(k) = capped.first() {
+                if !open.is_empty() && value[k] > fee {
+                    let exact = total - fixed;
+                    let mut s2: Vec<OutputSpec> = Vec::with_capacity(n);
+                    for i in 0..n {
+                        let v = match value.get(&i) {
+                            Some(v) if i == *k => v - fee,
+                            Some(v) => *v,
+                            None => exact / open.len() as u64,
+                        };
+                        s2.push(OutputSpec::new(v, ds[i].clone()));
+                    }
+                    shapes.push(s2);
+                }
+            }
         }
-        let rest = total - fixed - fee;
-        let open: Vec<usize> = (0..n).filter(|i| !value.contains_key(i)).collect();
-        let mut shape: Vec<OutputSpec> = Vec::with_capacity(n);
-        for i in 0..n {
-            let v = match value.get(&i) {
-                Some(v) => *v,
-                None => rest / open.len().max(1) as u64,
-            };
-            shape.push(OutputSpec::new(v, dest[&i].clone()));
-        }
-        shapes.push(shape);
     }
     shapes
 }
@@ -1070,8 +1297,9 @@ fn search_cospend(
     let msg_arg = entry.params.iter().position(|p| matches!(p.ty, TypeArtifact::Bytes));
     let has_datasig = entry.params.iter().any(|p| matches!(p.ty, TypeArtifact::Datasig));
     let mut per_param = Vec::new();
+    let text = crate::tune::entry_text(&contract.source, entry_name).unwrap_or_default();
     for p in &entry.params {
-        let body = crate::tune::entry_body(&contract.source, entry_name).unwrap_or("");
+        let body = text.as_str();
         per_param.push(candidates(contract, body, &p.name, &p.ty, has_datasig, msg_arg).ok()?);
     }
     let combos = ranked_cartesian(&per_param, 64);
@@ -1111,7 +1339,8 @@ fn search_cospend(
 /// `require(tx.inputs[this.activeInputIndex].value <= a + b + maxFee)`:
 /// the expression is a sum or difference of constructor ints and literals.
 fn input_value_caps(contract: &Contract, entry_name: &str) -> Vec<u64> {
-    let Some(body) = crate::tune::entry_body(&contract.source, entry_name) else { return vec![] };
+    let Some(text) = crate::tune::entry_text(&contract.source, entry_name) else { return vec![] };
+    let body = text.as_str();
     let ints: std::collections::BTreeMap<&str, i64> = contract
         .args
         .iter()
@@ -1168,7 +1397,8 @@ fn input_value_caps(contract: &Contract, entry_name: &str) -> Vec<u64> {
 /// Sum of the output values an entry pins to a constructor int or literal,
 /// one per output index.
 fn pinned_payout_total(contract: &Contract, entry_name: &str) -> Option<u64> {
-    let body = crate::tune::entry_body(&contract.source, entry_name)?;
+    let text = crate::tune::entry_text(&contract.source, entry_name)?;
+    let body = text.as_str();
     let ints: std::collections::BTreeMap<&str, i64> = contract
         .args
         .iter()

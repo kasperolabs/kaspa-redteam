@@ -82,6 +82,15 @@ pub enum ArgRecipe {
         arg: usize,
         hash: MsgHash,
     },
+    /// BIP340 signature by `key` over a 32-byte digest the contract holds
+    /// (`checkMsgSig(datasig(cancelSig), cancelDigest, user)`, with
+    /// `cancelDigest` a constructor value): a signed message, such as a KIP-5
+    /// cancel text, that only that key can make.
+    DigestSig {
+        key: KeyRef,
+        #[serde(serialize_with = "hex_ser")]
+        digest: Vec<u8>,
+    },
     /// A `byte[]` argument carrying a transaction signature by `key` after a
     /// fixed prefix (a KCC-20 witness: path byte `0x00`, then the signature).
     SigBytes {
@@ -265,13 +274,16 @@ impl SpendPlan {
             match i {
                 InputSpec::Covenant { args, .. } => {
                     for a in args {
-                        if let ArgRecipe::Sig(k) | ArgRecipe::SigBytes { key: k, .. } = a {
+                        if let ArgRecipe::Sig(k) | ArgRecipe::SigBytes { key: k, .. } | ArgRecipe::DigestSig { key: k, .. } = a {
                             if !v.contains(k) {
                                 v.push(*k);
                             }
                         }
                     }
                 }
+                // A party's own coin the path pins (a cancel that must spend the
+                // subscriber's ordinary coin): only that party can sign it.
+                InputSpec::P2pk { owner: k @ KeyRef::Party(_), .. } if !v.contains(k) => v.push(*k),
                 InputSpec::Raw(r) if r.target && r.signed && !v.contains(&KeyRef::External) => v.push(KeyRef::External),
                 _ => {}
             }
@@ -290,7 +302,7 @@ impl SpendPlan {
     }
     pub fn has_sig_recipe(&self) -> bool {
         self.inputs.iter().any(
-            |i| matches!(i, InputSpec::Covenant { args, .. } if args.iter().any(|a| matches!(a, ArgRecipe::Sig(_) | ArgRecipe::SigBytes { .. }))),
+            |i| matches!(i, InputSpec::Covenant { args, .. } if args.iter().any(|a| matches!(a, ArgRecipe::Sig(_) | ArgRecipe::SigBytes { .. } | ArgRecipe::DigestSig { .. }))),
         )
     }
     pub fn has_datasig_recipe(&self) -> bool {
@@ -565,6 +577,15 @@ impl Judge {
                                         }
                                         ArgRecipe::States { inputs, array, item } => {
                                             states_arg(contract, plan, *inputs, *array, item)?
+                                        }
+                                        ArgRecipe::DigestSig { key, digest } => {
+                                            let mut d = [0u8; 32];
+                                            if digest.len() != 32 {
+                                                return Err(anyhow!("message digest is not 32 bytes"));
+                                            }
+                                            d.copy_from_slice(digest);
+                                            let m = secp256k1::Message::from_digest(d);
+                                            ArtifactValue::Bytes(wallets.get(*key).keypair.sign_schnorr(m).as_ref().to_vec())
                                         }
                                         ArgRecipe::DataSigOf { key, arg, hash } => {
                                             let Some(ArgRecipe::Value(ArtifactValue::Bytes(m))) = args.get(*arg) else {

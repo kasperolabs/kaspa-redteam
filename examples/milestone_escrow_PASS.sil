@@ -1,0 +1,74 @@
+// Milestone escrow, correct. Expected: PASS.
+// A client funds a coin. release() pays one milestone to the contractor and
+// moves the rest to the next stage's contract (another covenant, by script
+// hash); anyone may trigger it. The client can stop the escrow and take
+// everything back in two ways: a signed stop message, or by spending one of
+// their own ordinary coins in the same transaction. Shared rules live in
+// helper functions.
+//
+// Constructor values:
+//   client          funds the escrow, gets refunds, signs the stop message
+//   contractor      gets each milestone
+//   milestone       one milestone, in sompi; at least MIN_PAYOUT
+//   maxFee          the most a spend may leave to miners, in sompi; below milestone
+//   stopDigest      hash of the stop message the client signs
+//   nextStageHash   script hash of the next stage's contract
+pragma silverscript ^0.1.0;
+
+contract MilestoneEscrow(pubkey client, pubkey contractor, int milestone, int maxFee, byte[32] stopDigest,
+                         byte[32] nextStageHash) {
+    // 2 KAS.
+    int constant MIN_PAYOUT = 200000000;
+
+    function checkValues() {
+        require(milestone >= MIN_PAYOUT);
+        require(maxFee >= 0);
+        require(maxFee < milestone);
+    }
+
+    // One output: everything back to the client, less at most maxFee.
+    function backToClient() {
+        require(this.activeInputIndex == 0);
+        int total = tx.inputs[0].value;
+        if (tx.inputs.length == 2) {
+            total = total + tx.inputs[1].value;
+        } else {
+            require(tx.inputs.length == 1);
+        }
+        require(tx.outputs.length == 1);
+        byte[36] clientScript = new ScriptPubKeyP2PK(client);
+        require(tx.outputs[0].scriptPubKey == byte[](clientScript));
+        require(tx.outputs[0].value >= total - maxFee);
+    }
+
+    entry release() {
+        checkValues();
+        require(this.activeInputIndex == 0);
+        require(tx.inputs.length == 1);
+        int balance = tx.inputs[0].value;
+        require(balance > milestone + MIN_PAYOUT);
+        require(tx.outputs.length == 2);
+        byte[36] contractorScript = new ScriptPubKeyP2PK(contractor);
+        require(tx.outputs[0].scriptPubKey == byte[](contractorScript));
+        require(tx.outputs[0].value <= milestone);
+        require(tx.outputs[0].value >= milestone - maxFee);
+        byte[37] nextScript = new ScriptPubKeyP2SH(nextStageHash);
+        require(tx.outputs[1].scriptPubKey == byte[](nextScript));
+        require(tx.outputs[1].value == balance - milestone);
+    }
+
+    entry stop(byte[] stopSig) {
+        require(stopSig.length == 64);
+        require(checkMsgSig(datasig(stopSig), stopDigest, client));
+        checkValues();
+        backToClient();
+    }
+
+    entry stopWithCoin() {
+        checkValues();
+        require(tx.inputs.length == 2);
+        byte[36] clientScript = new ScriptPubKeyP2PK(client);
+        require(tx.inputs[1].scriptPubKey == byte[](clientScript));
+        backToClient();
+    }
+}

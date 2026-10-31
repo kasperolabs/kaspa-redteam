@@ -38,6 +38,8 @@ impl CovenantAttack for Sig01 {
         for (p, b) in cx.live_paths().filter(|(_, b)| b.plan.has_sig_recipe()) {
             let unsigned = map_covenant_args(&b.plan, |a| match a {
                 ArgRecipe::Sig(_) => ArgRecipe::RawSig(garbage_sig()),
+                // A message signature has no sighash byte: 64 bytes, all zero.
+                ArgRecipe::DigestSig { .. } => ArgRecipe::Value(ArtifactValue::Bytes(vec![0u8; 64])),
                 ArgRecipe::SigBytes { prefix, .. } => {
                     let mut b = prefix.clone();
                     b.extend(garbage_sig());
@@ -93,6 +95,7 @@ impl CovenantAttack for Sig02 {
             // a) attacker signature, everything else as the honest spend
             let wrong_key = map_covenant_args(&b.plan, |a| match a {
                 ArgRecipe::Sig(_) => ArgRecipe::Sig(KeyRef::Attacker),
+                ArgRecipe::DigestSig { digest, .. } => ArgRecipe::DigestSig { key: KeyRef::Attacker, digest: digest.clone() },
                 ArgRecipe::SigBytes { prefix, .. } => {
                     ArgRecipe::SigBytes { key: KeyRef::Attacker, prefix: prefix.clone() }
                 }

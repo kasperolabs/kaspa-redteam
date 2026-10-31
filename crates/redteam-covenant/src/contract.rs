@@ -439,6 +439,9 @@ enum HashUse {
     /// Used as a key itself (`pubkey(owner)`), or named like one.
     Key,
     PubkeyBlake2b,
+    /// The digest a message signature is checked against
+    /// (`checkMsgSig(sig, cancelDigest, user)`): the hash of a message a key signs.
+    SignedDigest,
     SecretSha256,
     SecretBlake2b,
 }
@@ -457,6 +460,7 @@ pub fn param_hint(source: &str, name: &str, ty: &str) -> (Option<&'static str>, 
             HashUse::P2shTarget => (Some("p2sh"), "script hash of another contract: paste its kaspa:p… address".into()),
             HashUse::Key => (None, "a key: a kaspa:q… address or 32 bytes of hex".into()),
             HashUse::PubkeyBlake2b => (None, "hash of a key".into()),
+            HashUse::SignedDigest => (None, "hash of a message a key signs (64 hex)".into()),
             _ if n.contains("template") => (None, "template hash of a contract program (64 hex)".into()),
             _ if n.contains("covid") || n.contains("covenant") || n.ends_with("id") => (None, "covenant id (64 hex)".into()),
             _ if n.contains("commitment") => (None, "commitment hash (64 hex)".into()),
@@ -493,6 +497,7 @@ pub fn played_by_tool(source: &str, name: &str) -> Option<&'static str> {
     match hash_use(source, name) {
         HashUse::Key => Some("key"),
         HashUse::PubkeyBlake2b => Some("key hash"),
+        HashUse::SignedDigest => None,
         // Only a value the script actually hashes against is a lock; any other
         // byte[32] (an id, a template, a commitment) is the user's to give.
         HashUse::SecretSha256 | HashUse::SecretBlake2b => {
@@ -525,8 +530,21 @@ fn hash_use(source: &str, name: &str) -> HashUse {
     };
     let lines: Vec<&str> = source.lines().filter(|l| mentions(l) && !l.trim_start().starts_with("contract")).collect();
     let any = |pat: &str| lines.iter().any(|l| l.contains(pat));
+    // The second argument of `checkMsgSig(sig, digest, key)`.
+    let digest_of_msg_sig = lines.iter().any(|l| {
+        l.find("checkMsgSig(").is_some_and(|at| {
+            let args: Vec<&str> = l[at + 12..].split(',').collect();
+            args.len() >= 3 && {
+                let d = args[1].trim();
+                let d = d.strip_prefix("byte[32](").map(|x| x.trim_end_matches(')')).unwrap_or(d).trim();
+                d == name
+            }
+        })
+    });
     if any("ScriptPubKeyP2SH(") {
         HashUse::P2shTarget
+    } else if digest_of_msg_sig {
+        HashUse::SignedDigest
     } else if any("blake2b(byte[](") || (any("blake2b(") && (any("pk") || any("pubkey") || any("Pk"))) {
         HashUse::PubkeyBlake2b
     } else if any(&format!("pubkey({name})")) || {
@@ -631,6 +649,12 @@ fn default_value(
             HashUse::PubkeyBlake2b => {
                 let i = w.party(name);
                 (ArtifactValue::Bytes(blake2b(&w.parties[i].xonly())), format!("blake2b(party:{name})"))
+            }
+            // Any 32 bytes work: the signer signs the digest itself. The hash of a
+            // test text stands in for the real message (a KIP-5 cancel text).
+            HashUse::SignedDigest => {
+                let text = format!("kaspa-redteam test message for {name}");
+                (ArtifactValue::Bytes(blake2b(text.as_bytes())), format!("hash of a test message ({text:?})"))
             }
             HashUse::SecretBlake2b => {
                 let preimage = format!("redteam-secret:{name}").into_bytes();

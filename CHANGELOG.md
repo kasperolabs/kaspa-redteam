@@ -1,5 +1,16 @@
 # Changelog
 
+## Tool 0.15.0 (library 0.9.1)
+
+A subscription covenant with five paths, every rule in helper functions, a signed cancel message, a cancel that spends the subscriber's own coin and a first payment that locks the rest at another contract's address was fully unexplored with no values given (every attack skipped). It is now explored on all five paths with no values typed. Every example, corpus contract and fixture gives the same result as in 0.14.2.
+
+- Helper functions count as the entry's own: the search, the output shapes and the tuner read the bodies of the functions an entry calls (`checkValues()`, `payBackAll()`, `payOneMonth(...)`), and the functions those call.
+- Constructor values from the contract's own bounds: a default that breaks a `require` made on constructor values, constants and literals alone (`require(fee >= MIN_LEFTOVER)`, `require(maxNetworkFee < fee)`) is moved to the nearest value that holds, before anything else is tuned. The report says which values were moved and why; `--arg` still wins. Numbers a comment gives for a parameter (`period ... about 25,920,000`) are tried after the values the code compares against.
+- Message signatures over a digest the contract holds: `checkMsgSig(datasig(cancelSig), cancelDigest, user)` with `cancelDigest` a constructor value or state field. The named party signs the digest itself; the path is recorded as signed by that party. SIG-01 (invalid signature) and SIG-02 (attacker's key) now cover these too. A `byte[32]` used as such a digest defaults to the hash of a test message, not a hash-lock secret.
+- The spender's own coin: an entry that pins an input to a party's address (`tx.inputs[1].scriptPubKey == byte[](userScript)`) is tried with that party's ordinary coin at that index. A path that needs such a coin is recorded as signed by its owner.
+- Output shapes read scripts held in local names (`byte[36] merchantScript = new ScriptPubKeyP2PK(merchant)`, `new ScriptPubKeyP2SH(nextScriptHash)`); a script computed at run time is tried as the covenant itself and as each address the covenant names; an output the entry counts but never checks the script of can go anywhere. When a payment is capped (`value <= fee`), the network fee is also taken out of it, so the rest can be exact.
+- New example `milestone_escrow` (PASS and FAIL) uses all of the above; the FAIL version checks the next stage's amount but not its address, and OUT-01 catches it.
+
 ## Tool 0.14.2 (library 0.9.0)
 
 - `serve --usage-log <file>` (or `REDTEAM_USAGE_LOG`): one line per scan with the time, an anonymous visitor tag, the uploaded file names, the verdict (passed, gaps, untested, findings, error), the attack and finding counts and the run time. Never the code. The visitor tag is a hash of the address with a salt held only in memory and changed daily, so it tells one visitor's runs apart from another's on the same day and nothing more. Off by default; when it is on, the page's privacy line says so.
