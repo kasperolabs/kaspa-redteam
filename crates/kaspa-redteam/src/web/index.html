@@ -371,19 +371,25 @@ kaspa-redteam vault.sil -v</pre>
     const key = files.map(f => f.filename + ":" + f.source.length + ":" + f.source.slice(0, 200)).join("|");
     if (key === state.paramsKey) return;
     state.paramsKey = key;
-    if (!files.length) { state.params = []; return renderParams(); }
+    if (!files.length) { state.params = []; state.paramFiles = []; return renderParams(); }
     try {
       const r = await fetch("/api/params", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ files }) });
       const j = await r.json();
       if (key !== state.paramsKey) return;
-      if (!r.ok || j.error) { state.params = []; state.paramsError = true; return renderParams(); }
+      if (!r.ok || j.error) { state.params = []; state.paramFiles = []; state.paramsError = true; return renderParams(); }
       const old = new Map(state.params.map(p => [p.file + "/" + p.name, p.mine]));
       state.paramsError = false;
       state.params = j.contracts.flatMap(c => c.params.map(p => Object.assign({ file: c.file }, p, { mine: old.get(c.file + "/" + p.name) || "" })));
-    } catch (_) { state.params = []; }
+      state.paramFiles = j.contracts.map(c => ({ file: c.file, error: c.error || "" }));
+    } catch (_) { state.params = []; state.paramFiles = []; }
     renderParams();
   }
   function ctorSummary() {
+    const broken = (state.paramFiles || []).filter(f => f.error).length;
+    const s = ctorCount();
+    return broken ? `${s} · ${broken} file${broken > 1 ? "s" : ""} not compiling yet` : s;
+  }
+  function ctorCount() {
     const ps = state.params, editable = ps.filter(p => !p.played), mine = editable.filter(p => p.mine.trim());
     if (!ps.length) return state.paramsError ? "read when the contract compiles" : "the tool fills them in for testing";
     if (!editable.length) return `${ps.length}, all keys or secrets the tool plays`;
@@ -436,11 +442,15 @@ kaspa-redteam vault.sil -v</pre>
   function renderParams() {
     $("ctorSum").textContent = ctorSummary();
     const box = $("ctorRows");
-    if (!state.params.length) { box.innerHTML = `<div class="hint">${state.paramsError ? "The contract does not compile yet; its values show up once it does (the scan explains the error)." : "Add a contract to see its values."}</div>`; return; }
-    const files = [...new Set(state.params.map(p => p.file))];
+    const pf = state.paramFiles || [];
+    if (!state.params.length && !pf.some(f => f.error)) { box.innerHTML = `<div class="hint">${state.paramsError ? "The contract does not compile yet; its values show up once it does (the scan explains the error)." : "Add a contract to see its values."}</div>`; return; }
+    const files = pf.length ? pf.map(f => f.file) : [...new Set(state.params.map(p => p.file))];
     let h = "";
     files.forEach(file => {
       if (files.length > 1) h += `<div class="pfile">${esc(file)}</div>`;
+      const bad = pf.find(f => f.file === file && f.error);
+      if (bad) { h += `<div class="hint" style="padding:8px 0">Does not compile yet (${esc(bad.error)}); its values show up once it does. The scan explains the error.</div>`; return; }
+      if (!state.params.some(p => p.file === file)) { h += `<div class="hint" style="padding:8px 0">No constructor values.</div>`; return; }
       state.params.forEach((p, i) => {
         if (p.file !== file || p.played) return;
         h += `<div class="prow"><div class="pn">${esc(p.name)}<small>${esc(p.type)}${p.hint ? " · " + esc(p.hint) : ""}</small></div><div><input type="text" data-p="${i}" value="${esc(p.mine || p.value)}" spellcheck="false" aria-label="${esc(p.name)}"><div class="tag${p.mine ? " mine" : ""}" id="ptag${i}">${tagHtml(i)}</div></div></div>`;

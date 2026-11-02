@@ -198,7 +198,7 @@ Keep it running with pm2 (`pm2 start /path/to/kaspa-redteam --name redteam-web -
 | --- | --- |
 | `GET /` | the page |
 | `POST /api/scan` | `{ filename, source, args: ["name=value"], baseline, baseline_name, txids, network }` → `{ report, files }` (`report` is the `--json` report; with `txids`, `files` also holds `fetched-baseline.json`) |
-| `POST /api/params` | `{ files: [{ filename, source }] }` → each contract's constructor parameters with the value the tool would use and whether it plays them (`kaspa-redteam params FILE...`) |
+| `POST /api/params` | `{ files: [{ filename, source }] }` → each contract's constructor parameters with the value the tool would use (a default that breaks the contract's own bound, like `require(fee >= MIN_LEFTOVER)`, shows the value the tool moves it to) and whether it plays them; a file that does not compile gets an `error` and the others still show (`kaspa-redteam params FILE...`) |
 | `POST /api/scan` (project) | `{ files: [{ filename, source }], args }` → `{ report: { project, reports }, files }`; finding files are named `<stem>/<ID>.json` |
 | `GET /api/library` | the attack library |
 | `GET /og.png` | the link-preview card (Open Graph / X) |
@@ -229,6 +229,7 @@ Keep it running with pm2 (`pm2 start /path/to/kaspa-redteam --name redteam-web -
 - `-v` adds the **spend map**: for every path, who can spend it, where the honest spend paid, and the earliest lock value consensus accepted. Read it first; it is the tool's understanding of your contract.
 - `note: constructor ... set to ...`: a value the tool tuned so a path could be explored. The findings hold for that value; if your deployment uses a different one, pass it with `--arg`.
 - `note: path ... unexplored`: the path was not attacked. Clean results say nothing about it.
+- `unexplored: not reachable with X as written`: in a project, a path that needs a coin of X in the same transaction, when no entry of X accepts such a transaction (the reason quotes X's lines: it always keeps this coin's family going, leaves it untouched, or only runs before the coin exists). If the path is meant to be usable, X is where the fix goes. It still counts as unexplored.
 - Each finding has three parts: what consensus accepted (the explanation), **in practice**, how that situation comes about in real use (a wallet sending a deposit twice, someone watching the mempool), and the **fix pattern**, the code that closes it. A finding can be real and still not matter for your app: OUT-04 on a deposit that is always exact costs nothing. The in-practice line is there to make that call quickly.
 
 A path the search cannot spend is reported as **unexplored**, never as safe. For those, two ways in: `--arg` values the search could not guess, or a **baseline file**: honest transactions from your own test harness, which the attacks then mutate. That covers what the search cannot build from one file: another program's coins (a market that only accepts a coin of a pinned KCC-20 template), states tied together by real arithmetic, genesis transactions. Format and a JavaScript emitter: [BASELINE.md](BASELINE.md). A baseline can list the throwaway keys it was signed with (`"keys"`), so the attacks can re-sign after changing a transaction and test what a signing user could get away with.

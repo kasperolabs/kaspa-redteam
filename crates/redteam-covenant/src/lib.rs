@@ -21,6 +21,7 @@ pub mod replay;
 pub mod runner;
 pub mod sandbox;
 pub mod script;
+pub mod reach;
 pub mod tune;
 pub mod wallets;
 pub mod zk;

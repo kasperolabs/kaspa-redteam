@@ -279,6 +279,23 @@ fn bound_fixes(
     changed
 }
 
+/// Integer constructor values the tuner moves before anything else: defaults
+/// that break a `require` made on constructor values, constants and literals
+/// alone (`require(fee >= MIN_LEFTOVER)`). For the constructor form, so it
+/// shows the value a run starts from.
+pub fn bound_defaults(contract: &Contract, source: &str) -> BTreeMap<String, i64> {
+    let ints: BTreeMap<String, i64> = contract
+        .args
+        .iter()
+        .filter(|a| a.origin != "override")
+        .filter_map(|a| match a.value {
+            ArtifactValue::Int(n) => Some((a.name.clone(), n)),
+            _ => None,
+        })
+        .collect();
+    bound_fixes(source, &ints, &int_constants(source), &|_| false)
+}
+
 /// Values a parameter is compared against inside an entry, best first:
 /// constants and other parameters, then literals, non-zero before zero.
 fn candidates(

@@ -515,42 +515,61 @@ fn replay(files: &[PathBuf]) -> Result<ExitCode> {
 
 /// Constructor parameters as the web form shows them: name, type, the value
 /// the tool would use (in `--arg` syntax), where it came from, and whether
-/// the tool must play it (a key or a secret it cannot take from you).
+/// the tool must play it (a key or a secret it cannot take from you). Every
+/// file gets an entry; one that does not compile carries its `error` instead,
+/// so the others still show.
 fn params(files: &[PathBuf]) -> Result<ExitCode> {
-    use silverscript_abi::ArtifactValue;
     let mut out = Vec::new();
     for f in files {
         let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let raw = std::fs::read_to_string(f).with_context(|| format!("read {}", f.display()))?;
-        let (source, _) = redteam_covenant::legacy::prepare(&name, &raw)?;
-        let c = redteam_covenant::contract::Contract::load(&name, &source, &BTreeMap::new())?;
-        let rows: Vec<serde_json::Value> = c
-            .args
-            .iter()
-            .map(|a| {
-                let value = match &a.value {
-                    ArtifactValue::Int(n) => n.to_string(),
-                    ArtifactValue::Bool(b) => b.to_string(),
-                    ArtifactValue::Byte(b) => b.to_string(),
-                    ArtifactValue::Bytes(b) => format!("0x{}", faster_hex::hex_string(b)),
-                    ArtifactValue::Text(t) => t.clone(),
-                    other => format!("{other:?}"),
-                };
-                let played = if a.ty == "pubkey" {
-                    Some("key")
-                } else if a.ty == "byte[32]" {
-                    redteam_covenant::contract::played_by_tool(&source, &a.name)
-                } else {
-                    None
-                };
-                let (kind, hint) = redteam_covenant::contract::param_hint(&source, &a.name, &a.ty);
-                serde_json::json!({ "name": a.name, "type": a.ty, "value": value, "origin": a.origin, "played": played, "kind": kind, "hint": hint })
-            })
-            .collect();
-        out.push(serde_json::json!({ "file": name, "params": rows }));
+        match params_of_file(f, &name) {
+            Ok(rows) => out.push(serde_json::json!({ "file": name, "params": rows })),
+            Err(e) => {
+                let first = format!("{e:#}").lines().next().unwrap_or("").to_string();
+                out.push(serde_json::json!({ "file": name, "params": [], "error": first }))
+            }
+        }
     }
     println!("{}", serde_json::to_string(&out)?);
     Ok(ExitCode::SUCCESS)
+}
+
+fn params_of_file(f: &PathBuf, name: &str) -> Result<Vec<serde_json::Value>> {
+    use silverscript_abi::ArtifactValue;
+    let raw = std::fs::read_to_string(f).with_context(|| format!("read {}", f.display()))?;
+    let (source, _) = redteam_covenant::legacy::prepare(name, &raw)?;
+    let c = redteam_covenant::contract::Contract::load(name, &source, &BTreeMap::new())?;
+    let moved = redteam_covenant::tune::bound_defaults(&c, &source);
+    Ok(c.args
+        .iter()
+        .map(|a| {
+            let value = match (&a.value, moved.get(&a.name)) {
+                (_, Some(n)) => n.to_string(),
+                (ArtifactValue::Int(n), None) => n.to_string(),
+                (ArtifactValue::Bool(b), _) => b.to_string(),
+                (ArtifactValue::Byte(b), _) => b.to_string(),
+                (ArtifactValue::Bytes(b), _) => format!("0x{}", faster_hex::hex_string(b)),
+                (ArtifactValue::Text(t), _) => t.clone(),
+                (other, _) => format!("{other:?}"),
+            };
+            let played = if a.ty == "pubkey" {
+                Some("key")
+            } else if a.ty == "byte[32]" {
+                redteam_covenant::contract::played_by_tool(&source, &a.name)
+            } else {
+                None
+            };
+            let (kind, mut hint) = redteam_covenant::contract::param_hint(&source, &a.name, &a.ty);
+            let origin = if moved.contains_key(&a.name) {
+                let why = "moved to meet the contract's own bound";
+                hint = if hint.is_empty() { why.to_string() } else { format!("{hint}; {why}") };
+                "contract bound".to_string()
+            } else {
+                a.origin.clone()
+            };
+            serde_json::json!({ "name": a.name, "type": a.ty, "value": value, "origin": origin, "played": played, "kind": kind, "hint": hint })
+        })
+        .collect())
 }
 
 fn list(json: bool) -> Result<ExitCode> {

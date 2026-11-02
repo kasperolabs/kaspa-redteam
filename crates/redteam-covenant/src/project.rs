@@ -341,6 +341,13 @@ pub fn run(
                 }
             }
         }
+        // A follower path no entry of its partner can ever pair with: say so
+        // plainly instead of "it may need a coin of another program".
+        for p in t.paths.iter_mut().filter(|p| p.baseline.is_none()) {
+            if let Some(why) = crate::reach::unpairable(&f.name, &f.source, &p.name, &links, files) {
+                p.unexplored_reason = Some(why);
+            }
+        }
         let mut notes = t.notes;
         for n in family_notes {
             if !notes.contains(&n) {

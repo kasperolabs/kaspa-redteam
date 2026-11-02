@@ -1,5 +1,10 @@
 # Changelog
 
+## Tool 0.16.1 (library 0.9.1)
+
+- Constructor form (web) and `params`: every uploaded file gets its group. A file that does not compile yet is listed with the first line of its error instead of hiding the values of the others. A default the tool moves to meet the contract's own bound (`require(fee >= MIN_LEFTOVER)`) shows the moved value, marked as such, so the form shows what a run starts from.
+- Projects: a follower path no entry of its partner can pair with reads "not reachable with X as written", with the partner's lines that rule it out, instead of "it may need a coin of another program". BridgeMint's `retire` with bridge.sil: `advance` either leaves the mint untouched or keeps it going, and `init` runs only while the token is unset. When the sources do not settle it, the old wording stays.
+
 ## Tool 0.16.0 (library 0.9.1)
 
 - `kaspa-redteam fetch <txid>...`: real mainnet or testnet transactions and every coin they spent, written as a baseline file, so a deployed covenant can be attacked through the transactions it already made. From the public Kaspa REST API by default (`--network mainnet|testnet-10|testnet-11`, `--api URL` for another server), or from your own node over wRPC (`--node ws://...:17110`; the API then only says which block holds each transaction). `daaScore` and `pastMedianTime` come from the accepting block. A rebuilt transaction must hash to the id that was asked for and pass the consensus judge as fetched, or nothing is written. `txid:name` names a transaction in the report; plain payments are left out. The scan itself stays offline.
