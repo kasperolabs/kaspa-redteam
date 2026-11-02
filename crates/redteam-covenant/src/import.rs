@@ -80,7 +80,7 @@ fn is_plain_p2pk(spk: &ScriptPublicKey) -> bool {
 /// A 65-byte push ending in a sighash type: a Schnorr transaction signature.
 /// (A 64-byte push is not counted: KCC-20 transfer arguments, for one, pack two
 /// 32-byte fields into exactly that.)
-fn carries_signature(sig_script: &[u8]) -> bool {
+pub fn carries_signature(sig_script: &[u8]) -> bool {
     script::tokenize(sig_script).iter().any(
         |t| matches!(t, Token::Push(b) if b.len() == 65 && matches!(b[64], 0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83)),
     )
@@ -109,14 +109,18 @@ pub fn load(path: &std::path::Path, contract: &Contract, judge: &Judge) -> Resul
     for (n, item) in txs.iter().enumerate() {
         let label = item.get("path").and_then(|p| p.as_str()).map(String::from).unwrap_or_else(|| format!("tx{n}"));
         let ctx = |e: anyhow::Error| e.context(format!("{}: transaction `{label}`", path.display()));
-        let plan = parse_one(item, file_daa, file_time, &keys, contract, judge).map_err(ctx)?;
-        match judge.run(contract, &plan) {
-            (Verdict::Accepted { .. }, _) => {}
-            (Verdict::Rejected(why), _) => {
-                bail!(
+        let (mut plan, verbatim) = parse_one(item, file_daa, file_time, &keys, contract, judge).map_err(ctx)?;
+        if let (Verdict::Rejected(why), _) = judge.run(contract, &plan) {
+            // The plain coins were swapped for the attacker's own. A covenant
+            // that pins a coin to its owner (`tx.inputs[1].scriptPubKey ==
+            // P2PK(user)`) rejects that, so keep every coin as given: the owner's
+            // signature then stays, and changes that break it are what get tested.
+            match verbatim {
+                Some(v) if matches!(judge.run(contract, &v).0, Verdict::Accepted { .. }) => plan = v,
+                _ => bail!(
                     "{}: transaction `{label}` is rejected by consensus as given ({why}); fix the baseline first",
                     path.display()
-                )
+                ),
             }
         }
         let signers = plan.signers();
@@ -183,6 +187,8 @@ fn find_resigns(
     Ok(out)
 }
 
+/// The plan to attack and, when plain coins were swapped for the attacker's
+/// own, the same transaction with every coin kept as given.
 fn parse_one(
     item: &Value,
     file_daa: u64,
@@ -190,7 +196,7 @@ fn parse_one(
     keys: &[secp256k1::Keypair],
     contract: &Contract,
     judge: &Judge,
-) -> Result<SpendPlan> {
+) -> Result<(SpendPlan, Option<SpendPlan>)> {
     let tx = item.get("tx").ok_or_else(|| anyhow!("missing `tx`"))?;
     let utxos =
         item.get("utxos").and_then(|u| u.as_array()).ok_or_else(|| anyhow!("missing `utxos` (one per input)"))?;
@@ -300,11 +306,15 @@ fn parse_one(
             ScriptPublicKey::new(0, s.into())
         })
         .collect();
+    let key_spks = replaced.clone();
+    let verbatim_inputs: Vec<InputSpec> = specs.iter().cloned().map(InputSpec::Raw).collect();
+    let mut swapped = false;
     let mut plan_inputs = Vec::with_capacity(specs.len());
     for s in specs {
         if !s.target && !any_signed_target && is_plain_p2pk(&s.entry.script_public_key) {
             replaced.push(s.entry.script_public_key.clone());
             plan_inputs.push(InputSpec::P2pk { owner: KeyRef::Attacker, value: s.entry.amount });
+            swapped = true;
         } else {
             plan_inputs.push(InputSpec::Raw(s));
         }
@@ -312,7 +322,35 @@ fn parse_one(
 
     let plan_outputs = parse_outputs(outputs, &replaced, &own)?;
 
-    Ok(SpendPlan { version, inputs: plan_inputs, outputs: plan_outputs, lock_time, payload, pov_daa, block_time, genesis: vec![] })
+    let verbatim = swapped.then(|| -> Result<SpendPlan> {
+        Ok(SpendPlan {
+            version,
+            inputs: verbatim_inputs,
+            outputs: parse_outputs(outputs, &key_spks, &own)?,
+            lock_time,
+            payload: payload.clone(),
+            pov_daa,
+            block_time,
+            genesis: vec![],
+        })
+    });
+    let verbatim = match verbatim {
+        Some(v) => Some(v?),
+        None => None,
+    };
+    Ok((
+        SpendPlan {
+            version,
+            inputs: plan_inputs,
+            outputs: plan_outputs,
+            lock_time,
+            payload,
+            pov_daa,
+            block_time,
+            genesis: vec![],
+        },
+        verbatim,
+    ))
 }
 
 /// Outputs; those paying a `replaced` funding script go to the attacker, who now owns it.

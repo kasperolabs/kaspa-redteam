@@ -3,6 +3,7 @@
 Some covenants are out of reach for the spend search: covenant families with their own IDs, a sibling coin running a different program (a KCC-20 token next to its market), outputs computed by real arithmetic. For those, give kaspa-redteam the honest transactions your own test harness already builds, and it attacks those instead.
 
 ```
+kaspa-redteam fetch <txid>... -o real.json           # real transactions, written in this format for you
 kaspa-redteam --baseline honest.json                 # no .sil needed
 kaspa-redteam curve.sil --baseline honest.json       # search + imported, one report
 kaspa-redteam export vault.sil > example.json        # a working file to copy from
@@ -142,3 +143,8 @@ export function dumpBaseline(file, path, tx, utxos, ctx = {}) {
 ```
 
 Run your harness on testnet or simnet keys, or on throwaway keys with made-up funding coins (the file declares every coin it spends, so nothing has to exist on chain, and such a transaction can never be broadcast). A baseline file holds signed transactions; never export one built with mainnet keys you care about.
+
+## Fetched from the chain
+
+`kaspa-redteam fetch <txid>...` writes this format from real mainnet or testnet transactions (README: Real transactions). Each entry also carries the `txid` it came from, and the file a `source` line. It lists no `keys`: the signatures in a real transaction are kept as they are, so a covenant input that carries one makes its path a signed path (only changes that break the signature are tested), while permissionless covenant inputs are attacked in full. The plain coins that paid the fee are kept as they are too when any covenant input is signed.
+

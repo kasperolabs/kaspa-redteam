@@ -1,5 +1,11 @@
 # Changelog
 
+## Tool 0.16.0 (library 0.9.1)
+
+- `kaspa-redteam fetch <txid>...`: real mainnet or testnet transactions and every coin they spent, written as a baseline file, so a deployed covenant can be attacked through the transactions it already made. From the public Kaspa REST API by default (`--network mainnet|testnet-10|testnet-11`, `--api URL` for another server), or from your own node over wRPC (`--node ws://...:17110`; the API then only says which block holds each transaction). `daaScore` and `pastMedianTime` come from the accepting block. A rebuilt transaction must hash to the id that was asked for and pass the consensus judge as fetched, or nothing is written. `txid:name` names a transaction in the report; plain payments are left out. The scan itself stays offline.
+- Web page: a "Real transactions" box takes up to 20 ids and a network; the server fetches them, attacks them (with or without a `.sil`), and offers the fetched file for download. `serve --api URL` (or `REDTEAM_API`) for your own kaspa-rest-server; the usage log counts the ids, never lists them.
+- Baselines: when a transaction is only valid with its plain coins as given (a covenant that pins `tx.inputs[1]` to its owner's address), the import keeps them as given instead of stopping. Changes that break the owner's signature are then what gets tested.
+
 ## Tool 0.15.0 (library 0.9.1)
 
 A subscription covenant with five paths, every rule in helper functions, a signed cancel message, a cancel that spends the subscriber's own coin and a first payment that locks the rest at another contract's address was fully unexplored with no values given (every attack skipped). It is now explored on all five paths with no values typed. Every example, corpus contract and fixture gives the same result as in 0.14.2.

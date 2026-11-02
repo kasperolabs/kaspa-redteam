@@ -86,6 +86,7 @@ const MAX_BODY: usize = 1 << 20; // 1 MiB: a contract plus a baseline file
 const MAX_SOURCE: usize = 256 * 1024;
 const MAX_FILES: usize = 8;
 const MAX_ARGS: usize = 32;
+const MAX_TXIDS: usize = 20;
 
 pub struct ServeOptions {
     pub bind: String,
@@ -98,6 +99,8 @@ pub struct ServeOptions {
     pub threads: usize,
     /// Append one line per scan here (no source code).
     pub usage_log: Option<PathBuf>,
+    /// The kaspa-rest-server for mainnet transaction ids (None: the public one).
+    pub api: Option<String>,
 }
 
 struct Shared {
@@ -320,7 +323,12 @@ fn usage_line(path: &Path, s: &Shared, ip: IpAddr, body: &[u8], result: &Result<
     if names.is_empty() && given(&req) {
         names.push(named(&req));
     }
-    if names.is_empty() {
+    let ntx = req
+        .get("txids")
+        .and_then(|v| v.as_str())
+        .map(|t| t.split(|c: char| c == ',' || c.is_whitespace()).filter(|p| !p.is_empty()).count())
+        .unwrap_or(0);
+    if names.is_empty() && ntx == 0 {
         names.push("baseline".into());
     }
 
@@ -372,11 +380,12 @@ fn usage_line(path: &Path, s: &Shared, ip: IpAddr, body: &[u8], result: &Result<
             format!("verdict={verdict} attacks={attacks} findings={findings} unexplored={gaps}")
         }
     };
+    let txids = if ntx > 0 { format!("  txids={ntx}") } else { String::new() };
     let line = format!(
-        "{}  visitor={visitor}  files={}  contracts={}  {tail}  secs={:.1}\n",
+        "{}  visitor={visitor}  files={}  contracts={}{txids}  {tail}  secs={:.1}\n",
         utc(now),
         names.len(),
-        names.join(","),
+        if names.is_empty() { "-".to_string() } else { names.join(",") },
         took.as_secs_f64()
     );
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
@@ -446,8 +455,40 @@ fn scan(body: &[u8], s: &Shared) -> Result<Value> {
             project.push((name, src.to_string()));
         }
     }
-    if source.trim().is_empty() && baseline.trim().is_empty() && project.is_empty() {
-        anyhow::bail!("Give a .sil contract (or a baseline file).");
+    // Real transaction ids: pulled from the public API into a baseline before the scan.
+    let mut txids: Vec<String> = Vec::new();
+    for part in req
+        .get("txids")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|p| !p.is_empty())
+    {
+        if txids.len() >= MAX_TXIDS {
+            anyhow::bail!("At most {MAX_TXIDS} transaction ids at once.");
+        }
+        let (id, name) = part.split_once(':').unwrap_or((part, ""));
+        let ok = id.len() == 64
+            && id.bytes().all(|c| c.is_ascii_hexdigit())
+            && name.len() <= 40
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c));
+        if !ok {
+            anyhow::bail!(
+                "`{}` is not a transaction id (64 hex characters, optionally :name).",
+                part.chars().take(80).collect::<String>()
+            );
+        }
+        txids.push(part.to_string());
+    }
+    let network = req.get("network").and_then(|v| v.as_str()).unwrap_or("mainnet");
+    if crate::fetch::api_for(network).is_none() {
+        anyhow::bail!("Unknown network `{}`.", network.chars().take(20).collect::<String>());
+    }
+    if !txids.is_empty() && !project.is_empty() {
+        anyhow::bail!("Transaction ids work with one .sil file at a time for now.");
+    }
+    if source.trim().is_empty() && baseline.trim().is_empty() && project.is_empty() && txids.is_empty() {
+        anyhow::bail!("Give a .sil contract (or a baseline file, or transaction ids).");
     }
     if source.len() > MAX_SOURCE {
         anyhow::bail!("That contract is over 256 KiB.");
@@ -518,10 +559,57 @@ fn scan(body: &[u8], s: &Shared) -> Result<Value> {
         std::fs::write(dir.join(&name), baseline)?;
         cmd.arg("--baseline").arg(&name);
     }
+    let started = Instant::now();
+    let mut fetched: Option<String> = None;
+    if !txids.is_empty() {
+        let mut f = Command::new(&s.exe);
+        f.arg("fetch").args(&txids).args(["--network", network, "--out", "fetched.json"]);
+        if let (Some(api), "mainnet") = (&s.opts.api, network) {
+            f.arg("--api").arg(api);
+        }
+        f.current_dir(&dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+        limit_memory(&mut f);
+        let mut child = f.spawn().context("start the fetcher")?;
+        let err = child.stderr.take().expect("piped");
+        let err_t = std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let _ = err.take(16 * 1024).read_to_end(&mut v);
+            v
+        });
+        let limit = Duration::from_secs((s.opts.timeout / 2).clamp(20, 90));
+        let status = loop {
+            if let Some(st) = child.try_wait()? {
+                break Some(st);
+            }
+            if started.elapsed() > limit {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let msg = String::from_utf8_lossy(&err_t.join().unwrap_or_default()).trim().to_string();
+        match status {
+            None => anyhow::bail!(
+                "Fetching the transactions took longer than {} s. Try fewer, or run `kaspa-redteam fetch` yourself.",
+                limit.as_secs()
+            ),
+            Some(st) if !st.success() => {
+                anyhow::bail!("Could not fetch the transactions: {}", msg.trim_start_matches("error: "))
+            }
+            Some(_) => {}
+        }
+        fetched = Some(std::fs::read_to_string(dir.join("fetched.json")).context("read the fetched transactions")?);
+        cmd.arg("--baseline").arg("fetched.json");
+        if shown_name == "baseline" {
+            shown_name = format!("{} transaction(s)", txids.len());
+        }
+    }
     // Searching stops well before the hard limit so attacks still run and a report comes back.
     // A project also spends what it minted after the search (up to 20 s of its
     // own), so its search stops earlier.
-    let deadline = if project.len() > 1 { s.opts.timeout / 2 } else { s.opts.timeout * 2 / 3 }.max(5).to_string();
+    let left = s.opts.timeout.saturating_sub(started.elapsed().as_secs());
+    let deadline = if project.len() > 1 { left / 2 } else { left * 2 / 3 }.max(5).to_string();
     cmd.args(["--json", "--no-color", "--out", "findings", "--deadline", &deadline])
         .current_dir(&dir)
         .env("RAYON_NUM_THREADS", s.opts.threads.to_string())
@@ -531,7 +619,6 @@ fn scan(body: &[u8], s: &Shared) -> Result<Value> {
         .stderr(Stdio::piped());
     limit_memory(&mut cmd);
 
-    let started = Instant::now();
     let mut child = cmd.spawn().context("start the scanner")?;
     let mut out = child.stdout.take().expect("piped");
     let err = child.stderr.take().expect("piped");
@@ -577,13 +664,17 @@ fn scan(body: &[u8], s: &Shared) -> Result<Value> {
     let mut names = Vec::new();
     collect(&dir.join("findings"), "", &mut names);
     names.sort();
-    let files: Vec<Value> = names
+    let mut files: Vec<Value> = names
         .iter()
         .map(|name| {
             let content = std::fs::read_to_string(dir.join("findings").join(name)).unwrap_or_default();
             json!({ "name": name, "content": scrub(&content, &dir) })
         })
         .collect();
+    // The fetched transactions, so the same baseline can be run again offline.
+    if let Some(text) = fetched {
+        files.push(json!({ "name": "fetched-baseline.json", "content": text }));
+    }
     if let Value::Object(o) = &mut report {
         if project.is_empty() {
             o.insert("web_subject".into(), Value::String(shown_name));

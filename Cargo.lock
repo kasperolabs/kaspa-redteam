@@ -2747,18 +2747,25 @@ dependencies = [
 
 [[package]]
 name = "kaspa-redteam"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "clap",
  "faster-hex 0.10.1",
+ "kaspa-consensus-core",
+ "kaspa-hashes",
+ "kaspa-rpc-core",
+ "kaspa-wrpc-client",
  "libc",
+ "rayon",
  "redteam-core",
  "redteam-covenant",
  "redteam-node",
+ "reqwest",
  "serde_json",
  "silverscript-abi",
  "tiny_http",
+ "tokio",
 ]
 
 [[package]]
@@ -3994,7 +4001,7 @@ dependencies = [
 
 [[package]]
 name = "redteam-core"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "faster-hex 0.10.1",
  "serde",
@@ -4004,7 +4011,7 @@ dependencies = [
 
 [[package]]
 name = "redteam-covenant"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "ark-bn254 0.6.0",
@@ -4035,7 +4042,7 @@ dependencies = [
 
 [[package]]
 name = "redteam-node"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "inventory",

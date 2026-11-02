@@ -51,6 +51,7 @@ kaspa-redteam vault.sil --badge                # clean run: redteam-badge.svg + 
 kaspa-redteam treasury.sil fund.sil -v         # several files that work together: one project
 kaspa-redteam --baseline honest.json           # attack transactions from your own harness
 kaspa-redteam export vault.sil > example.json  # the honest spends found, as a baseline file
+kaspa-redteam fetch <txid>... -o real.json     # real mainnet/testnet transactions as a baseline file
 kaspa-redteam replay findings/*.json           # re-judge saved findings
 kaspa-redteam list                             # the attack library
 kaspa-redteam node --kaspad ./kaspad           # node and mining packs (local simnet)
@@ -100,6 +101,24 @@ The language still changes, and the tool compiles with the current SilverScript.
 
 What is tested is today's compile. A contract already on chain keeps the bytecode an older compiler made, which may differ; to test exactly what is deployed, give its real transactions with `--baseline`.
 
+### Real transactions from mainnet or testnet
+
+```
+kaspa-redteam fetch 3f1c...e9:buy 77ab...02:sell -o real.json   # :name is optional
+kaspa-redteam --baseline real.json                              # attack them
+kaspa-redteam curve.sil --baseline real.json                    # with the source, paths get its names
+kaspa-redteam fetch <txid> --network testnet-10 -o real.json
+kaspa-redteam fetch <txid> --node ws://127.0.0.1:17110 -o real.json   # from your own node
+```
+
+`fetch` pulls each transaction and every coin it spent, and writes a baseline file (format: [BASELINE.md](BASELINE.md)). It is the only command that goes online; the scan itself stays offline, so the file can be kept, shared and run again.
+
+- By default everything comes from the public Kaspa REST API (`api.kaspa.org`; `--network testnet-10` or `testnet-11` for those, `--api URL` for any other kaspa-rest-server). With `--node` the transactions, the spent coins and the block data come from your node over wRPC (Borsh); the API is then only asked which block holds each transaction, because a node cannot look one up by id. A pruned node only has recent blocks; an archival node has them all.
+- `daaScore` and `pastMedianTime` come from the block that accepted each transaction (its DAA score, and its timestamp in place of its past median time, which no RPC gives for an old block; the timestamp is at most a few minutes later).
+- Every rebuilt transaction must hash to the id you asked for, and consensus must accept it as fetched, or nothing is written.
+- Transactions with no covenant input (plain payments) are left out.
+- The keys that signed a real transaction are not yours to give, so the tool cannot sign again after changing it: a path a signature commits to is only tested for changes that break that signature. Permissionless paths (anyone can spend, given the right outputs) are tested in full, which is where most covenant bugs live.
+
 ### Projects: several contracts that work together
 
 Real systems are often more than one `.sil` file: a treasury and its department funds, a token and the market that sells it. Give all the files in one run and they are treated as one program:
@@ -144,7 +163,7 @@ kaspa-redteam serve                                # http://127.0.0.1:8790
 kaspa-redteam serve --port 8790 --jobs 2 --timeout 120 --threads 4
 ```
 
-A single page where anyone can drop a `.sil` file (or several that work together, tested as one project), or paste one,, optionally add constructor values or a baseline file, and get the same report the command line gives: verdict, findings with fix patterns, the spend map, every attack's result, and the repro files to download. The page is built into the binary; there is nothing else to install.
+A single page where anyone can drop a `.sil` file (or several that work together, tested as one project), or paste one, optionally add constructor values, a baseline file or real transaction ids (fetched from the public API by the server, as `fetch` does, at most 20), and get the same report the command line gives: verdict, findings with fix patterns, the spend map, every attack's result, and the repro files to download. The page is built into the binary; there is nothing else to install.
 
 Every scan runs as a separate child process of the same binary, in a fresh temporary folder that is deleted when it ends. Limits: the search stops at two thirds of `--timeout` (`--deadline`) so the attacks still run and a report always comes back, and the scan is killed at `--timeout` seconds (default 120), 2 GiB of memory, `--threads` worker threads per scan, one running scan per visitor and `--jobs` scans at once (others are told to try again). Uploads are capped at 1 MiB in total, 256 KiB and 8 files per scan. Nothing is logged or kept, unless the operator passes `--usage-log <file>` (or sets `REDTEAM_USAGE_LOG`): then the server appends one line per scan with the time, an anonymous visitor tag, the uploaded file names and the result, never the code, and the page's privacy line says so:
 
@@ -152,7 +171,9 @@ Every scan runs as a separate child process of the same binary, in a fresh tempo
 2026-10-30T23:39:41Z  visitor=09ba  files=3  contracts=BridgeMint.sil,KCC20.sil,bridge.sil  verdict=passed attacks=26 findings=0 unexplored=0  secs=40.0
 ```
 
-The visitor tag is a hash of the address, salted per day with a value that lives only in the server's memory.
+The visitor tag is a hash of the address, salted per day with a value that lives only in the server's memory. A run from transaction ids adds `txids=N` (the count, not the ids).
+
+Transaction ids pasted on the page are fetched by the server from the public API before the scan (within half of `--timeout`, at most 90 s). `serve --api URL` (or `REDTEAM_API`) points mainnet fetches at your own kaspa-rest-server instead.
 
 It listens on `127.0.0.1` by default. For a public site, put a reverse proxy in front; the server reads the visitor's address from `X-Real-IP` or `X-Forwarded-For` when the request comes from the same machine. nginx:
 
@@ -176,7 +197,7 @@ Keep it running with pm2 (`pm2 start /path/to/kaspa-redteam --name redteam-web -
 | Route | What |
 | --- | --- |
 | `GET /` | the page |
-| `POST /api/scan` | `{ filename, source, args: ["name=value"], baseline, baseline_name }` → `{ report, files }` (`report` is the `--json` report) |
+| `POST /api/scan` | `{ filename, source, args: ["name=value"], baseline, baseline_name, txids, network }` → `{ report, files }` (`report` is the `--json` report; with `txids`, `files` also holds `fetched-baseline.json`) |
 | `POST /api/params` | `{ files: [{ filename, source }] }` → each contract's constructor parameters with the value the tool would use and whether it plays them (`kaspa-redteam params FILE...`) |
 | `POST /api/scan` (project) | `{ files: [{ filename, source }], args }` → `{ report: { project, reports }, files }`; finding files are named `<stem>/<ID>.json` |
 | `GET /api/library` | the attack library |
@@ -284,14 +305,14 @@ inventory::submit! { CovenantPlugin(&Out02) }
 crates/redteam-core       findings, report, badge, shared types
 crates/redteam-covenant   compile, spend search, judge, covenant attacks
 crates/redteam-node       simnet harness, mainnet guard, node/mining attacks
-crates/kaspa-redteam      the CLI
+crates/kaspa-redteam      the CLI, the web page, fetch (the only part that goes online)
 fixtures/<ID>/            vulnerable.sil + fixed.sil per attack
 corpus/                   real covenants the library is run against
 ```
 
 ## Safety
 
-Simnet and in-process only. Finding files target sandbox UTXOs, not live coins. A finding against someone else's deployed contract goes privately to its author first (see SECURITY.md).
+Simnet and in-process only; `fetch` only reads public chain data. Finding files target sandbox UTXOs, not live coins. A finding against someone else's deployed contract goes privately to its author first (see SECURITY.md).
 
 ## License
 

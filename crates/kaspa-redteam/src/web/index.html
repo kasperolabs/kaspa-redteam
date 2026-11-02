@@ -301,6 +301,17 @@ footer { margin: 64px 0 40px; padding-top: 18px; border-top: 1px solid var(--lin
       </div>
     </div>
 
+    <div class="row">
+      <div style="grid-column: 1 / -1">
+        <details class="adv" id="txBox">
+          <summary>Real transactions (advanced)</summary>
+          <div class="hint">Paste transaction ids that spent your covenant on mainnet or testnet, one per line (add <code>:name</code> to name one, like <code>3f1c...:buy</code>). The server pulls them and every coin they spent from the public Kaspa API and attacks them as a baseline; a <code>.sil</code> above is optional. Signatures in them can't be remade (no keys), so signed paths are only tested for changes that break the signature. At most 20.</div>
+          <textarea id="txids" rows="3" spellcheck="false" placeholder="txid&#10;txid:sell"></textarea>
+          <div style="margin-top:6px"><label class="hint">Network <select id="network"><option value="mainnet">mainnet</option><option value="testnet-10">testnet-10</option><option value="testnet-11">testnet-11</option></select></label></div>
+        </details>
+      </div>
+    </div>
+
     <div class="actions">
       <button class="go" id="go" type="submit" disabled>Attack it</button>
       <span class="privacy">Runs in an isolated process. The file is deleted when the run ends; nothing is kept.</span>
@@ -341,7 +352,7 @@ kaspa-redteam vault.sil -v</pre>
 (() => {
   const $ = id => document.getElementById(id);
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const state = { name: "", source: "", baselineName: "", baseline: "", more: [], compiled: "", compiledName: "", params: [], paramsKey: "" };
+  const state = { name: "", source: "", baselineName: "", baseline: "", txids: "", more: [], compiled: "", compiledName: "", params: [], paramsKey: "" };
 
   // ---- constructor values --------------------------------------------------
   // Rows come from the contract itself (names, types, the tool's value). A row
@@ -483,7 +494,7 @@ kaspa-redteam vault.sil -v</pre>
       drop.className = "drop";
       drop.innerHTML = `<strong>Drop a <span class="mono" style="color:inherit;font-size:inherit">.sil</span> file here</strong><span>or click to choose one</span>`;
     }
-    go.disabled = !(state.source.trim() || state.baseline.trim());
+    go.disabled = !(state.source.trim() || state.baseline.trim() || state.txids.trim());
     scheduleParams();
   }
   async function takeFiles(list) {
@@ -516,6 +527,7 @@ kaspa-redteam vault.sil -v</pre>
     if (f.size > 512 * 1024) return showError("That compiled file is over 512 KiB.");
     state.compiled = await f.text(); state.compiledName = f.name;
   };
+  $("txids").oninput = () => { state.txids = $("txids").value; refresh(); };
   $("baseline").onchange = async e => {
     const f = e.target.files[0];
     if (!f) { state.baseline = ""; state.baselineName = ""; return refresh(); }
@@ -599,7 +611,7 @@ kaspa-redteam vault.sil -v</pre>
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(state.more.length
           ? { files: [{ filename: state.name, source: state.source }].concat(state.more.map(f => ({ filename: f.name, source: f.source }))), args, args_json: argsJson }
-          : { filename: state.name, source: state.source, args, args_json: argsJson, baseline: state.baseline, baseline_name: state.baselineName, compiled: state.compiled }),
+          : { filename: state.name, source: state.source, args, args_json: argsJson, baseline: state.baseline, baseline_name: state.baselineName, compiled: state.compiled, txids: state.txids, network: $("network").value }),
       });
       let j; try { j = await r.json(); } catch (_) { j = { error: `The server answered ${r.status}.` }; }
       if (!r.ok || j.error) showError(j.error || `The server answered ${r.status}.`);
@@ -706,6 +718,8 @@ kaspa-redteam vault.sil -v</pre>
     if ((rep.notes || []).length) {
       h += `<h3 class="sec">Notes</h3><div class="card"><ul class="notes">${rep.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul></div>`;
     }
+    const fb = files.findIndex(y => y.name === "fetched-baseline.json");
+    if (fb >= 0) h += `<div class="dl"><button class="linkbtn" data-file="${fb}">Download the fetched transactions (fetched-baseline.json)</button><span class="hint" style="margin:0">run them again offline: <code>kaspa-redteam --baseline fetched-baseline.json</code></span></div>`;
     return h;
   }
   function bind(reports, files) {

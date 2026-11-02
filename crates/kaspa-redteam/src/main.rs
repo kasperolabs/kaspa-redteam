@@ -4,6 +4,7 @@
 //!   kaspa-redteam vault.sil --arg owner=@alice    pick constructor values
 //!   kaspa-redteam vault.sil --only sig,outputs    run selected packs or attack IDs
 //!   kaspa-redteam vault.sil --json                machine output for CI
+//!   kaspa-redteam fetch <txid>... -o honest.json  real transactions as a baseline file
 //!   kaspa-redteam replay findings/OUT-01.json     re-judge a saved finding
 //!   kaspa-redteam list                            every attack in the library
 //!   kaspa-redteam node --kaspad ./kaspad          node and mining packs on a local simnet
@@ -20,6 +21,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod fetch;
 mod serve;
 
 #[derive(Parser)]
@@ -82,6 +84,24 @@ struct Common {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Real transactions and every coin they spent, from a Kaspa API or your own node, as a baseline file (BASELINE.md)
+    Fetch {
+        /// Transaction ids, each optionally followed by :name (what the report calls it), e.g. 3f1c...:buy
+        #[arg(required = true)]
+        txids: Vec<String>,
+        /// mainnet, testnet-10 or testnet-11 (picks the public API)
+        #[arg(long, default_value = "mainnet")]
+        network: String,
+        /// Ask this kaspa-rest-server instead of the public one (your own, or another network's)
+        #[arg(long, value_name = "URL")]
+        api: Option<String>,
+        /// Your own node (wRPC Borsh, e.g. ws://127.0.0.1:17110): transactions and blocks come from it; the API is only asked which block holds each transaction
+        #[arg(long, value_name = "URL")]
+        node: Option<String>,
+        /// Write the baseline file here (default: print it)
+        #[arg(short, long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
     /// Re-judge saved findings; exit 1 if any still reproduces
     Replay { files: Vec<PathBuf> },
     /// Write the honest spends the search finds as a baseline file (a format example and an editable template)
@@ -116,6 +136,9 @@ enum Cmd {
         /// Append one line per scan to this file: time, an anonymous visitor tag, file names, verdict. Never the code.
         #[arg(long, env = "REDTEAM_USAGE_LOG")]
         usage_log: Option<std::path::PathBuf>,
+        /// The kaspa-rest-server the page fetches mainnet transaction ids from (default: the public one)
+        #[arg(long, env = "REDTEAM_API", value_name = "URL")]
+        api: Option<String>,
     },
     /// Node and mining attacks on local simnet kaspad processes (never mainnet)
     Node {
@@ -147,9 +170,10 @@ fn real_main() -> Result<ExitCode> {
     let cli = Cli::parse();
     match cli.cmd {
         Some(Cmd::Replay { files }) => replay(&files),
+        Some(Cmd::Fetch { txids, network, api, node, out }) => fetch_cmd(&txids, &network, api, node, out),
         Some(Cmd::List { json }) => list(json),
         Some(Cmd::Params { files }) => params(&files),
-        Some(Cmd::Serve { bind, port, jobs, timeout, threads, usage_log }) => {
+        Some(Cmd::Serve { bind, port, jobs, timeout, threads, usage_log, api }) => {
             serve::serve(serve::ServeOptions {
                 bind,
                 port,
@@ -157,6 +181,7 @@ fn real_main() -> Result<ExitCode> {
                 timeout,
                 threads: threads.max(1),
                 usage_log,
+                api,
             })?;
             Ok(ExitCode::SUCCESS)
         }
@@ -400,6 +425,69 @@ fn finish(mut report: RunReport, c: &Common) -> Result<ExitCode> {
     } else {
         Ok(ExitCode::from(1))
     }
+}
+
+/// `fetch`: pull the transactions, check that consensus accepts each one as
+/// fetched, then write the baseline. The summary goes to stderr so the file
+/// can be piped.
+fn fetch_cmd(
+    txids: &[String],
+    network: &str,
+    api: Option<String>,
+    node: Option<String>,
+    out: Option<PathBuf>,
+) -> Result<ExitCode> {
+    let mut wants = Vec::new();
+    for arg in txids {
+        for part in arg.split(|c: char| c == ',' || c.is_whitespace()).filter(|p| !p.is_empty()) {
+            wants.push(fetch::parse_want(part)?);
+        }
+    }
+    let base = match api {
+        Some(u) => u,
+        None => fetch::api_for(network)
+            .with_context(|| format!("no public API known for network `{network}`; give one with --api URL"))?
+            .to_string(),
+    };
+    let rest = fetch::Rest { http: fetch::Web::new(&base)?, base: base.clone() };
+    let got = match node {
+        Some(url) => fetch::fetch(&fetch::Node::connect(&url, rest)?, &wants)?,
+        None => fetch::fetch(&rest, &wants)?,
+    };
+    let text = serde_json::to_string_pretty(&got.doc)?;
+    verify_fetched(&text)?;
+    match &out {
+        Some(p) => std::fs::write(p, &text).with_context(|| format!("write {}", p.display()))?,
+        None => println!("{text}"),
+    }
+    let n = got.lines.len();
+    eprintln!("fetched {n} transaction(s) from {}", got.source);
+    for l in &got.lines {
+        eprintln!("  {l}");
+    }
+    for s in &got.skipped {
+        eprintln!("  skipped {s}");
+    }
+    eprintln!("consensus accepts all {n} as fetched.");
+    eprintln!(
+        "Signatures in them can't be remade (the tool has no keys), so a signed path is only tested for changes that break the signature; permissionless paths are tested in full."
+    );
+    let file = out.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<file>".into());
+    eprintln!("next: kaspa-redteam --baseline {file}   (or kaspa-redteam contract.sil --baseline {file})");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Loads a fetched baseline the way a scan will, so a transaction consensus
+/// rejects as fetched is reported now, not at scan time.
+fn verify_fetched(text: &str) -> Result<()> {
+    let dir = std::env::temp_dir().join(format!("kaspa-redteam-fetch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let f = dir.join("fetched.json");
+    std::fs::write(&f, text)?;
+    let contract = redteam_covenant::contract::Contract::for_import("fetched.json", text.as_bytes());
+    let r = redteam_covenant::import::load(&f, &contract, &redteam_covenant::sandbox::Judge::new());
+    let _ = std::fs::remove_dir_all(&dir);
+    r.map(|_| ()).context("the fetched transactions do not replay in the tool's consensus judge; nothing was written. Please report this with the transaction ids")
 }
 
 fn replay(files: &[PathBuf]) -> Result<ExitCode> {

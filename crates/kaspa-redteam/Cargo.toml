@@ -19,5 +19,12 @@ clap.workspace = true
 serde_json.workspace = true
 silverscript-abi.workspace = true
 faster-hex.workspace = true
+kaspa-consensus-core.workspace = true
+kaspa-hashes.workspace = true
+kaspa-rpc-core.workspace = true
+kaspa-wrpc-client.workspace = true
+tokio.workspace = true
+rayon.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 tiny_http = "0.12"
 libc = "0.2"
