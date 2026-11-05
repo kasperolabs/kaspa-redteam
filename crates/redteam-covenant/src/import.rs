@@ -79,16 +79,58 @@ fn is_plain_p2pk(spk: &ScriptPublicKey) -> bool {
 
 /// A 65-byte push ending in a sighash type: a Schnorr transaction signature.
 /// (A 64-byte push is not counted: KCC-20 transfer arguments, for one, pack two
-/// 32-byte fields into exactly that.)
+/// 32-byte fields into exactly that.) A known program's witness counts too: a
+/// KCC-20 cell's owner signs inside `witness` (path byte, then the signature),
+/// which is one longer push.
 pub fn carries_signature(sig_script: &[u8]) -> bool {
     script::tokenize(sig_script).iter().any(
         |t| matches!(t, Token::Push(b) if b.len() == 65 && matches!(b[64], 0x01 | 0x02 | 0x03 | 0x81 | 0x82 | 0x83)),
-    )
+    ) || !crate::known::builtin_witness_signatures(sig_script).is_empty()
+}
+
+/// Who signs a path whose covenant inputs carry signatures no listed key made,
+/// in words for the spend map.
+pub fn signed_by(plan: &SpendPlan) -> String {
+    let mut who = Vec::new();
+    for (i, inp) in plan.inputs.iter().enumerate() {
+        let InputSpec::Raw(r) = inp else { continue };
+        if !r.signed {
+            continue;
+        }
+        match crate::known::recognize(&r.signature_script, crate::known::builtin()) {
+            Some(rec) if !crate::known::witness_signatures(&rec).is_empty() => {
+                let borrow = rec.call.as_ref().is_some_and(|c| c.entry == "transfer")
+                    && matches!(rec.call.as_ref().and_then(|c| c.args.get(1)), Some(silverscript_abi::ArtifactValue::Bytes(w)) if w.first() == Some(&1));
+                who.push(if borrow {
+                    format!("the borrow key of the {} coin at input {i} (signature inside its witness)", rec.pin.name)
+                } else {
+                    format!("the owner of the {} coin at input {i} (signature inside its token witness)", rec.pin.name)
+                });
+            }
+            _ => who.push(format!("an outside key at input {i}")),
+        }
+    }
+    if who.is_empty() { "an outside key".into() } else { who.join(" + ") }
 }
 
 /// Reads a baseline file into paths ready to attack. The `contract` gives
 /// labels; for a run with no `.sil`, pass `Contract::for_import`.
 pub fn load(path: &std::path::Path, contract: &Contract, judge: &Judge) -> Result<Vec<PathStatus>> {
+    Ok(load_with(path, contract, judge, &[])?.0)
+}
+
+/// `load`, with programs the user gave next to the baseline (`known::from_contract`)
+/// recognized alongside the shipped ones, and notes for the report: which
+/// coins were recognized, and why a family attack was not built.
+pub fn load_with(
+    path: &std::path::Path,
+    contract: &Contract,
+    judge: &Judge,
+    partners: &[crate::known::Pin],
+) -> Result<(Vec<PathStatus>, Vec<String>)> {
+    let mut pins: Vec<crate::known::Pin> = crate::known::builtin().to_vec();
+    pins.extend(partners.iter().cloned());
+    let mut notes = Vec::new();
     let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let doc: Value = serde_json::from_str(&raw).with_context(|| format!("{}: not JSON", path.display()))?;
     if let Some(f) = doc.get("format").and_then(|f| f.as_str()) {
@@ -109,12 +151,15 @@ pub fn load(path: &std::path::Path, contract: &Contract, judge: &Judge) -> Resul
     for (n, item) in txs.iter().enumerate() {
         let label = item.get("path").and_then(|p| p.as_str()).map(String::from).unwrap_or_else(|| format!("tx{n}"));
         let ctx = |e: anyhow::Error| e.context(format!("{}: transaction `{label}`", path.display()));
-        let (mut plan, verbatim) = parse_one(item, file_daa, file_time, &keys, contract, judge).map_err(ctx)?;
+        let (mut plan, verbatim) = parse_one(item, file_daa, file_time, &keys, contract, judge, &pins).map_err(ctx)?;
         if let (Verdict::Rejected(why), _) = judge.run(contract, &plan) {
             // The plain coins were swapped for the attacker's own. A covenant
             // that pins a coin to its owner (`tx.inputs[1].scriptPubKey ==
             // P2PK(user)`) rejects that, so keep every coin as given: the owner's
             // signature then stays, and changes that break it are what get tested.
+            if crate::debug_on() {
+                eprintln!("[import] {label}: with the plain coins swapped for the attacker's: {why}");
+            }
             match verbatim {
                 Some(v) if matches!(judge.run(contract, &v).0, Verdict::Accepted { .. }) => plan = v,
                 _ => bail!(
@@ -123,18 +168,51 @@ pub fn load(path: &std::path::Path, contract: &Contract, judge: &Judge) -> Resul
                 ),
             }
         }
+        // Signed by a user next to an unsigned covenant: take that user's seat.
+        if plan.inputs.iter().any(|i| matches!(i, InputSpec::Raw(r) if r.signed && !r.target)) {
+            if let Some((p, keys)) = crate::raw_family::reown(&plan, contract, &pins) {
+                match judge.run(contract, &p).0 {
+                    Verdict::Accepted { .. } => {
+                        notes.push(format!(
+                            "`{label}`: the coins and token cells of key {} (the trader) were given to the tool's attacker key, outputs and new token cells to that key too, and the trade still passed; the covenant is attacked from a trader's seat",
+                            keys.join(", ")
+                        ));
+                        plan = p;
+                    }
+                    Verdict::Rejected(why) => {
+                        if crate::debug_on() {
+                            eprintln!("[import] {label}: from the attacker's seat: {why}");
+                        }
+                    }
+                }
+            }
+        }
         let signers = plan.signers();
+        for (i, inp) in plan.inputs.iter().enumerate() {
+            if let InputSpec::Raw(r) = inp {
+                if let Some(rec) = crate::known::recognize(&r.signature_script, &pins) {
+                    let line = format!("`{label}`: {}", crate::known::describe(i, &rec));
+                    notes.push(if r.target {
+                        line
+                    } else {
+                        format!("{line}; treated as a partner program, not the covenant under test")
+                    });
+                }
+            }
+        }
+        let (variants, vnotes) = crate::raw_family::variants(&label, &plan, contract, judge, &pins);
+        notes.extend(vnotes);
         out.push(PathStatus {
             entry: format!("{label} (imported)"),
             name: label.clone(),
             state: None,
-            baseline: Some(Baseline { plan, signers, secrets: vec![], lock: None, variants: vec![] }),
+            baseline: Some(Baseline { plan, signers, secrets: vec![], lock: None, variants }),
             unexplored_reason: None,
             tries: 0,
             imported: true,
         });
     }
-    Ok(out)
+    Ok((out, notes))
 }
 
 /// Throwaway keys the harness signed with (`"keys": ["<64 hex>"]`). Any
@@ -159,6 +237,7 @@ fn find_resigns(
     keys: &[secp256k1::Keypair],
     contract: &Contract,
     judge: &Judge,
+    pins: &[crate::known::Pin],
 ) -> Result<Vec<Option<Resign>>> {
     let mut out = vec![None; specs.len()];
     if keys.is_empty() {
@@ -170,7 +249,11 @@ fn find_resigns(
     for (i, s) in specs.iter().enumerate() {
         let sighash = calc_schnorr_signature_hash(&populated, i, SIG_HASH_ALL, &reused);
         let msg = secp256k1::Message::from_digest_slice(sighash.as_bytes().as_slice()).expect("32-byte digest");
-        'offsets: for at in script::sig_push_offsets(&s.signature_script) {
+        let mut offsets = script::sig_push_offsets(&s.signature_script);
+        if let Some(rec) = crate::known::recognize(&s.signature_script, pins) {
+            offsets.extend(crate::known::witness_signatures(&rec).iter().filter(|w| w.schnorr).map(|w| w.at));
+        }
+        'offsets: for at in offsets {
             let b = &s.signature_script[at..at + 65];
             if b[64] != SIG_HASH_ALL.to_u8() {
                 continue;
@@ -196,6 +279,7 @@ fn parse_one(
     keys: &[secp256k1::Keypair],
     contract: &Contract,
     judge: &Judge,
+    pins: &[crate::known::Pin],
 ) -> Result<(SpendPlan, Option<SpendPlan>)> {
     let tx = item.get("tx").ok_or_else(|| anyhow!("missing `tx`"))?;
     let utxos =
@@ -230,6 +314,19 @@ fn parse_one(
         entries.push(UtxoEntry::new(amount, s, daa, coinbase, cov));
     }
 
+    // Coins of a program shipped with the tool (a KCC-20 cell next to the
+    // market under test) are partners, not the covenant under test, unless
+    // they are all there is. A file the user gave stays a target.
+    let mut known: Vec<bool> = inputs
+        .iter()
+        .map(|inp| {
+            let s = inp.get("signatureScript").and_then(|v| hex(v, "signatureScript").ok()).unwrap_or_default();
+            crate::known::recognize(&s, crate::known::builtin()).is_some()
+        })
+        .collect();
+    if entries.iter().zip(&known).all(|(e, k)| is_plain_p2pk(&e.script_public_key) || *k) {
+        known = vec![false; inputs.len()];
+    }
     let mut specs = Vec::with_capacity(inputs.len());
     for (i, inp) in inputs.iter().enumerate() {
         let w = format!("inputs[{i}]");
@@ -241,7 +338,7 @@ fn parse_one(
         let entry = entries[i].clone();
         let target = match &targets {
             Some(t) => t.contains(&i),
-            None => !is_plain_p2pk(&entry.script_public_key),
+            None => !is_plain_p2pk(&entry.script_public_key) && !known[i],
         };
         specs.push(RawInput {
             outpoint: Some(TransactionOutpoint::new(txid, index)),
@@ -281,7 +378,7 @@ fn parse_one(
         block_time,
         genesis: vec![],
     };
-    let resigns = find_resigns(&specs, &as_given, keys, contract, judge)?;
+    let resigns = find_resigns(&specs, &as_given, keys, contract, judge, pins)?;
     for (s, r) in specs.iter_mut().zip(resigns) {
         if r.is_some() {
             s.signed = false;

@@ -15,8 +15,10 @@ pub mod family;
 pub mod locate;
 pub mod ctor_file;
 pub mod import;
+pub mod known;
 pub mod legacy;
 pub mod project;
+pub mod raw_family;
 pub mod replay;
 pub mod runner;
 pub mod sandbox;
@@ -72,6 +74,8 @@ pub fn spend_map(c: &Contract, paths: &[PathStatus]) -> serde_json::Value {
                 Some(b) => {
                     let who = if b.signers.contains(&wallets::KeyRef::Attacker) {
                         "anyone with any key (the covenant names no key for this path)".to_string()
+                    } else if b.signers == [wallets::KeyRef::External] {
+                        format!("signed by {}", import::signed_by(&b.plan))
                     } else if !b.signers.is_empty() {
                         let names: Vec<_> = b.signers.iter().map(|k| c.wallets.label(*k)).collect();
                         format!("signed by {}", names.join(" + "))

@@ -290,6 +290,20 @@ impl SpendPlan {
         }
         v
     }
+    /// Value of the inputs the attacker owns: its plain coins, and imported
+    /// coins it signs for.
+    pub fn attacker_input_total(&self, attacker: &secp256k1::Keypair) -> u64 {
+        self.inputs
+            .iter()
+            .map(|i| match i {
+                InputSpec::P2pk { owner: KeyRef::Attacker, value } => *value,
+                InputSpec::Raw(r) if r.resign.as_ref().is_some_and(|s| s.keypair.public_key() == attacker.public_key()) => {
+                    r.entry.amount
+                }
+                _ => 0,
+            })
+            .sum()
+    }
     /// Some input carries a signature the tool remakes with a baseline key.
     pub fn has_resigned(&self) -> bool {
         self.inputs.iter().any(|i| matches!(i, InputSpec::Raw(r) if r.resign.is_some()))
@@ -783,6 +797,27 @@ fn failing_input(tx: &PopulatedTransaction) -> Option<(usize, String)> {
         }
     }
     None
+}
+
+/// Every input whose script fails when run on its own, with the error.
+pub fn failing_inputs(b: &Built) -> Vec<(usize, String)> {
+    use kaspa_consensus_core::tx::VerifiableTransaction;
+    use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine, caches::Cache, covenants::CovenantsContext};
+    let tx = PopulatedTransaction::new(&b.tx, b.entries.clone());
+    let Ok(cov) = CovenantsContext::from_tx(&tx) else { return vec![] };
+    let cache = Cache::new(64);
+    let reused = SigHashReusedValuesUnsync::new();
+    let ctx = EngineCtx::new(&cache).with_covenants_ctx(&cov).with_reused(&reused);
+    let flags = EngineFlags { sigop_script_units: kaspa_consensus_core::mass::Gram(1000).into() };
+    let mut out = Vec::new();
+    for (i, (input, entry)) in tx.populated_inputs().enumerate() {
+        let limit = input.compute_commit.allowed_script_units();
+        let mut vm = TxScriptEngine::from_transaction_input_with_script_units_limit(&tx, input, i, entry, ctx, flags, limit);
+        if let Err(e) = vm.execute() {
+            out.push((i, e.to_string()));
+        }
+    }
+    out
 }
 
 /// What an input's script compared when it failed: the two operands of the

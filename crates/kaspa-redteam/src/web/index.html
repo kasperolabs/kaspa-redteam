@@ -305,7 +305,7 @@ footer { margin: 64px 0 40px; padding-top: 18px; border-top: 1px solid var(--lin
       <div style="grid-column: 1 / -1">
         <details class="adv" id="txBox">
           <summary>Real transactions (advanced)</summary>
-          <div class="hint">Paste transaction ids that spent your covenant on mainnet or testnet, one per line (add <code>:name</code> to name one, like <code>3f1c...:buy</code>). The server pulls them and every coin they spent from the public Kaspa API and attacks them as a baseline; a <code>.sil</code> above is optional. Signatures in them can't be remade (no keys), so signed paths are only tested for changes that break the signature. At most 20.</div>
+          <div class="hint">Paste transaction ids that spent your covenant on mainnet or testnet, one per line (add <code>:name</code> to name one, like <code>3f1c...:buy</code>). The server pulls them and every coin they spent from the public Kaspa API and attacks them as a baseline; a <code>.sil</code> above is optional, and with several files the transactions are attacked once more next to them. KCC-20 reference token cells in them are recognized by their program and the trader's seat goes to a test key; other signatures can't be remade, so those paths are only tested for changes that break the signature. At most 20.</div>
           <textarea id="txids" rows="3" spellcheck="false" placeholder="txid&#10;txid:sell"></textarea>
           <div style="margin-top:6px"><label class="hint">Network <select id="network"><option value="mainnet">mainnet</option><option value="testnet-10">testnet-10</option><option value="testnet-11">testnet-11</option></select></label></div>
         </details>
@@ -620,7 +620,7 @@ kaspa-redteam vault.sil -v</pre>
       const r = await fetch("/api/scan", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(state.more.length
-          ? { files: [{ filename: state.name, source: state.source }].concat(state.more.map(f => ({ filename: f.name, source: f.source }))), args, args_json: argsJson }
+          ? { files: [{ filename: state.name, source: state.source }].concat(state.more.map(f => ({ filename: f.name, source: f.source }))), args, args_json: argsJson, baseline: state.baseline, baseline_name: state.baselineName, txids: state.txids, network: $("network").value }
           : { filename: state.name, source: state.source, args, args_json: argsJson, baseline: state.baseline, baseline_name: state.baselineName, compiled: state.compiled, txids: state.txids, network: $("network").value }),
       });
       let j; try { j = await r.json(); } catch (_) { j = { error: `The server answered ${r.status}.` }; }

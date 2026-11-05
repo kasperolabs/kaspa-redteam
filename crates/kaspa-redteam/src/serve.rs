@@ -554,7 +554,7 @@ fn scan(body: &[u8], s: &Shared) -> Result<Value> {
         std::fs::write(dir.join("constructor-values.json"), args_json)?;
         cmd.arg("--args").arg("constructor-values.json");
     }
-    if !baseline.trim().is_empty() && project.is_empty() {
+    if !baseline.trim().is_empty() {
         let name = safe_name(req.get("baseline_name").and_then(|v| v.as_str()).unwrap_or(""), ".json", "baseline.json");
         std::fs::write(dir.join(&name), baseline)?;
         cmd.arg("--baseline").arg(&name);

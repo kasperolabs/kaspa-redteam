@@ -317,19 +317,96 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
         }
     };
     let mut imported = Vec::new();
+    let mut notes = notes;
     for b in &a.baselines {
-        imported.extend(redteam_covenant::import::load(b, &contract, &judge)?);
+        let (p, n) = redteam_covenant::import::load_with(b, &contract, &judge, &[])?;
+        imported.extend(p);
+        notes.extend(n);
     }
     let report = redteam_covenant::run_paths_timed(&contract, &a.common.only, paths, imported, notes, started);
     finish(report, &a.common)
 }
 
+/// Several files with `--baseline`: the real transactions are attacked once,
+/// with every file that is a stateful program as a partner the tool can
+/// recognize in them (by template hash, with the constructor values given).
+/// The file whose program matches a covenant input under test labels the report.
+fn project_baselines(
+    a: &ScanArgs,
+    files: &[redteam_covenant::project::ProjectFile],
+    overrides: &BTreeMap<String, String>,
+    judge: &redteam_covenant::sandbox::Judge,
+    started: std::time::Instant,
+) -> Result<(RunReport, Vec<String>)> {
+    let mut partners = Vec::new();
+    let mut contracts = Vec::new();
+    let mut notes = Vec::new();
+    for f in files {
+        match redteam_covenant::contract::Contract::load(&f.name, &f.source, overrides) {
+            Ok(c) => {
+                if let Some(p) = redteam_covenant::known::from_contract(&c) {
+                    partners.push(p);
+                }
+                contracts.push(c);
+            }
+            Err(e) => notes.push(format!("{}: not used as a partner for the real transactions ({e})", f.name)),
+        }
+    }
+    let short =
+        |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.display().to_string());
+    let names: Vec<String> = a.baselines.iter().map(short).collect();
+    let mut raw = Vec::new();
+    for b in &a.baselines {
+        raw.extend(std::fs::read(b).with_context(|| format!("read {}", b.display()))?);
+    }
+    let fallback = redteam_covenant::contract::Contract::for_import(&names.join(" + "), &raw);
+    // Load once to see which file the covenant under test is.
+    let mut owner: Option<usize> = None;
+    for b in &a.baselines {
+        let (paths, _) = redteam_covenant::import::load_with(b, &fallback, judge, &partners)?;
+        for p in &paths {
+            let Some(base) = &p.baseline else { continue };
+            for inp in &base.plan.inputs {
+                if let redteam_covenant::sandbox::InputSpec::Raw(r) = inp {
+                    if !r.target {
+                        continue;
+                    }
+                    if let Some(rec) = redteam_covenant::known::recognize(&r.signature_script, &partners) {
+                        owner = owner.or_else(|| contracts.iter().position(|c| c.file_name == rec.pin.origin));
+                    }
+                }
+            }
+        }
+    }
+    let contract = owner.map(|i| &contracts[i]).unwrap_or(&fallback);
+    let matched: Vec<&str> = partners.iter().map(|p| p.origin.as_str()).collect();
+    if owner.is_none() && !matched.is_empty() {
+        notes.push(format!(
+            "real transactions: no covenant input under test is the program of {} as compiled here (constructor values differ from the deployed ones?); give them with --args to match",
+            matched.join(", ")
+        ));
+    }
+    let mut imported = Vec::new();
+    for b in &a.baselines {
+        let (p, n) = redteam_covenant::import::load_with(b, contract, judge, &partners)?;
+        imported.extend(p);
+        notes.extend(n);
+    }
+    let mut report = redteam_covenant::run_paths_timed(
+        contract,
+        &a.common.only,
+        vec![],
+        imported,
+        std::mem::take(&mut notes),
+        started,
+    );
+    report.subject_name = format!("{} (real transactions)", names.join(" + "));
+    Ok((report, vec![names.join(" + ")]))
+}
+
 /// Several files: one project, each contract searched and attacked with its
 /// links to the others, one combined report.
 fn project(a: &ScanArgs, overrides: &BTreeMap<String, String>, file_notes: Vec<String>) -> Result<ExitCode> {
-    if !a.baselines.is_empty() {
-        bail!("--baseline works with one .sil file at a time for now");
-    }
     let started = std::time::Instant::now();
     if let Some(s) = a.deadline {
         redteam_covenant::baseline::set_deadline(started + std::time::Duration::from_secs(s));
@@ -349,22 +426,30 @@ fn project(a: &ScanArgs, overrides: &BTreeMap<String, String>, file_notes: Vec<S
         notes.extend(file_notes.iter().cloned());
         r.notes.splice(0..0, notes);
     }
+    // Real transactions: one more report, after the files' own.
+    let mut report_names: Vec<String> = files.iter().map(|f| f.name.clone()).collect();
+    if !a.baselines.is_empty() {
+        let (r, names) = project_baselines(a, &files, overrides, &judge, started)?;
+        reports.push(r);
+        report_names.extend(names);
+    }
     let c = &a.common;
     let mut any = false;
-    for (f, r) in files.iter().zip(reports.iter_mut()) {
+    for (name, r) in report_names.iter().zip(reports.iter_mut()) {
         if !r.is_clean() {
             any = true;
-            let stem = f.name.rsplit_once('.').map(|(s, _)| s).unwrap_or(&f.name);
+            let stem = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(name);
             let dir = c.out.join(stem);
             write_findings(r, &dir).with_context(|| format!("write findings to {}", dir.display()))?;
         }
     }
     if c.json {
         let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        let baselines: Vec<String> = a.baselines.iter().map(|b| b.display().to_string()).collect();
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "project": { "files": names, "links": links, "millis": started.elapsed().as_millis() },
+                "project": { "files": names, "baselines": baselines, "links": links, "millis": started.elapsed().as_millis() },
                 "reports": reports,
             }))?
         );
@@ -374,8 +459,13 @@ fn project(a: &ScanArgs, overrides: &BTreeMap<String, String>, file_notes: Vec<S
         };
         let findings: usize = reports.iter().map(|r| r.findings().count()).sum();
         println!(
-            "project: {} contracts, {} link(s), {} finding(s), {:.1}s",
+            "project: {} contracts{}, {} link(s), {} finding(s), {:.1}s",
             files.len(),
+            if a.baselines.is_empty() {
+                String::new()
+            } else {
+                format!(" + real transactions from {}", report_names.last().cloned().unwrap_or_default())
+            },
             links.len(),
             findings,
             started.elapsed().as_secs_f64()

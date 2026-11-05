@@ -36,7 +36,7 @@ Nothing is sent anywhere. The file is read, every transaction is first checked b
 | `keys` | Optional. Throwaway private keys (64 hex) the harness signed with. Any transaction signature one of them made, in any input, is signed again after each change. See below. |
 | `own` | Optional, per transaction. Indexes of outputs that belong to the signing user (a buyer's new token coin, say). Attacks do not take from these: shortchanging yourself is not a finding. Outputs paying a listed key's plain address are recognised without it. |
 | `path` | A name for the report: usually the entry point. |
-| `targets` | Indexes of the inputs that are the covenant under test. Optional: by default every input that is not a plain pay-to-pubkey coin. |
+| `targets` | Indexes of the inputs that are the covenant under test. Optional: by default every input that is not a plain pay-to-pubkey coin and not a known program (a KCC-20 reference cell, README: Known programs); if nothing else is left, the known program's inputs are the target. |
 | `tx` | The transaction, as rusty-kaspa's `Transaction` serializes to JSON (below). |
 | `utxos` | The coin each input spends, same order as `tx.inputs`. |
 
@@ -86,7 +86,7 @@ rusty-kaspa's JSON for `UtxoEntry`:
 
 - **Covenant inputs** (`targets`) stay byte for byte as given: their signature scripts, redeem scripts, witnesses. Attacks may add a second copy (IN-01) or put a coin in front (IN-02).
 - **Plain pay-to-pubkey inputs** (the coins that pay the fee or fund a purchase) are treated as the attacker's own: the tool swaps them for test coins of the same value and re-signs them, so outputs can change. Change outputs that went back to those coins go to the attacker.
-- **If a covenant input carries a transaction signature** (a 65-byte push ending in a sighash type byte) that no listed key made, the path is treated as signed: an outsider cannot change outputs without that key, so only the attacks that make sense for an outsider run, and funding coins are kept verbatim (re-signing them would break the covenant signature, which commits to every input).
+- **If a covenant input carries a transaction signature** (a 65-byte push ending in a sighash type byte, or the owner's signature inside a KCC-20 reference cell's `witness`) that no listed key made, the path is treated as signed: an outsider cannot change outputs without that key, so only the attacks that make sense for an outsider run, and funding coins are kept verbatim (re-signing them would break the covenant signature, which commits to every input).
 - **If a listed key made it** (`keys`), the signature is the attacker's own: the tool signs again after every change, and the path is attacked from that signer's seat. This is how a user-signed path (a seller signing for their own token coin) gets tested: can the signer take more than the covenant allows?
 
 ### Which keys to list
@@ -143,6 +143,8 @@ export function dumpBaseline(file, path, tx, utxos, ctx = {}) {
 ```
 
 Run your harness on testnet or simnet keys, or on throwaway keys with made-up funding coins (the file declares every coin it spends, so nothing has to exist on chain, and such a transaction can never be broadcast). A baseline file holds signed transactions; never export one built with mainnet keys you care about.
+
+- **KCC-20 reference cells** next to the covenant are read and rebuilt (README: Known programs): a listed key that owns one is re-signed inside the witness, and when only a trader signed, the trader's seat goes to the tool's test key.
 
 ## Fetched from the chain
 

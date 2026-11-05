@@ -1,5 +1,18 @@
 # Changelog
 
+## Tool 0.17.0 (library 0.10.0)
+
+First live run on a KAS/KCC-20 pool's mainnet transactions: the token cells were opaque, the buyer's and seller's signatures made every trade a signed path, and 22 of 29 attacks were skipped. The same five transactions now run FAM-09, FAM-10 and BOR-01 against the pool, from a trader's seat, with no extra files.
+
+- Known programs: the KCC-20 reference programs (argent-lang/kcc20-reference c8a0871, ISC, in `crates/redteam-covenant/library/`) ship with the tool and are recognized in baselines by their KCC-1 template hash, exact match only. Stated hashes are checked against the bytes at start. The report names each recognized cell (amount, owner scheme, borrow scheme, entry).
+- A recognized cell is a partner, not the covenant under test, unless nothing else is: input attacks target the market next to it.
+- The owner's signature inside a KCC-20 witness (`transfer(next_states, witness)`: path byte, then the signature) counts as a signature, in scans and in `fetch`. The spend map says whose: "signed by the owner of the KCC20 coin at input 1 (signature inside its token witness)" instead of "anyone, no signature". A listed key that made it is re-signed in place.
+- The trader's seat: when the covenant under test is unsigned and only a trader signed (a buyer's coin, a seller's token cell), that trader's coins, token cells, payouts and new cells go to the tool's test key, signed again after every change. Kept only if consensus still accepts the trade; the covenant's own coins and state are never touched.
+- Family and borrow attacks on real transactions: FAM-10 (a second cell the covenant owns, spent as a delegate and paid to the attacker), FAM-09 (the covenant's tokens leave, its coin keeps its KAS), BOR-01 (the covenant's cell with borrowing on) and BOR-02 (already borrowable on chain). Each hostile version must be accepted or refused by the covenant under test; one the token program itself refuses was built wrong, is dropped with a note and does not count.
+- `--baseline` with several files: each file is attacked as before, and the transactions get one more report, labelled by the file whose program is a covenant input under test. Every stateful file is recognized in them by its template hash as compiled. The web page sends a baseline file or transaction ids with a project too.
+- OUT-04 on real transactions: the fee the spender's own coins paid is no longer "value left over"; taking your own fee back is not a finding.
+- `REDTEAM_DEBUG=1` prints why a baseline kept its plain coins as given.
+
 ## Tool 0.16.1 (library 0.9.1)
 
 - Constructor form (web) and `params`: every uploaded file gets its group. A file that does not compile yet is listed with the first line of its error instead of hiding the values of the others. A default the tool moves to meet the contract's own bound (`require(fee >= MIN_LEFTOVER)`) shows the moved value, marked as such, so the form shows what a run starts from.

@@ -219,6 +219,12 @@ impl CovenantAttack for Out04 {
             if left <= 5 * NORMAL_FEE {
                 continue;
             }
+            // A real transaction's leftover is the fee its spender paid. When
+            // the spender's own coins could have paid all of it, taking it back
+            // takes nothing from the covenant.
+            if p.imported && left <= b.plan.attacker_input_total(&cx.contract.wallets.attacker.keypair) {
+                continue;
+            }
             let take = left - NORMAL_FEE;
             let mut plan = b.plan.clone();
             plan.outputs = kept;

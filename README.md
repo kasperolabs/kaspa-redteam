@@ -118,6 +118,18 @@ kaspa-redteam fetch <txid> --node ws://127.0.0.1:17110 -o real.json   # from you
 - Every rebuilt transaction must hash to the id you asked for, and consensus must accept it as fetched, or nothing is written.
 - Transactions with no covenant input (plain payments) are left out.
 - The keys that signed a real transaction are not yours to give, so the tool cannot sign again after changing it: a path a signature commits to is only tested for changes that break that signature. Permissionless paths (anyone can spend, given the right outputs) are tested in full, which is where most covenant bugs live.
+- When the covenant under test is unsigned and only a trader signed (a buyer's coin, a seller's KCC-20 cell), the trader's seat goes to the tool's own test key: that key's coins and token cells, the outputs that paid it and the new token cells it got all become the test key's, and the signatures are made again after every change. The covenant's own coins and state are never touched. The trade is kept this way only if consensus still accepts it, and the report says so (`the coins and token cells of key 89f4... (the trader) were given to the tool's attacker key`).
+
+### Known programs: KCC-20 cells in real transactions
+
+A market's real transactions spend token cells too, and those run a program you did not hand over. The KCC-20 reference programs (argent-lang/kcc20-reference at c8a0871: `KCC20`, `PublicMint`, `TokenSeed`) ship with the tool in `crates/redteam-covenant/library/kcc20-reference/`. A coin whose redeem script is one of them, byte for byte outside its state window, is recognized by its KCC-1 template hash (BLAKE3 of the program with the state cut out; KCC20 is `9703112e...`). Exact matching only: a copy that differs by one byte is not the reference and stays opaque. When one is recognized:
+
+- The report names it: `recognized KCC20 at input 1 by template hash 9703112ee6e3... (argent-lang/kcc20-reference@c8a0871); a KCC-20 cell of 3000000 units, owner scheme 4 (covenant id), borrowing off, spent through transfer`.
+- It is a partner, not the covenant under test (unless the transaction has no other covenant input): the input attacks target the market, not the token.
+- The owner's signature inside the token witness (`transfer(next_states, witness)`, the path byte then the signature) counts as a signature, and the spend map says whose: `signed by the owner of the KCC20 coin at input 1 (signature inside its token witness)`.
+- Its signature script and the token outputs can be rebuilt, so the family and borrow attacks run on the real transaction: a second cell the covenant owns spent next to the first and paid to the attacker (FAM-10), the covenant's tokens leaving while its own coin keeps its KAS (FAM-09), the covenant's cell with borrowing on (BOR-01), or already borrowable on chain (BOR-02). Each hostile version is checked first: if the token program itself rejects it, it was built wrong, it is dropped with a note, and it does not count as survived.
+
+The other family attacks (FAM-01 to FAM-08) need the search's own draft and run only from sources.
 
 ### Projects: several contracts that work together
 
@@ -133,7 +145,9 @@ The tool reads how the contracts refer to each other and wires them together ins
 - **address**: a `byte[32]` parameter used as a P2SH target whose name matches another file (`treasury` and `TownTreasury`) gets that contract's real script, so money paid to it goes to the actual program and is checked there.
 - **template**: a `byte[32]` constant or value equal to another file's template hash (a market pinning its token's program) is detected and reported.
 
-The report starts with the links it found, so you can check it understood the project, then each contract's results. Findings go to `out/<file stem>/`. `--json` gives `{ "project": { "files", "links", "millis" }, "reports": [ ... ] }`. `--baseline` is for single contracts only.
+The report starts with the links it found, so you can check it understood the project, then each contract's results. Findings go to `out/<file stem>/`. `--json` gives `{ "project": { "files", "baselines", "links", "millis" }, "reports": [ ... ] }`.
+
+With `--baseline` (or real transactions) next to several files, each file is attacked as above and the transactions get one more report, `real.json (real transactions)`. Every file with a state window becomes a known program for them (its template hash as compiled with the values given), and the file whose program is a covenant input under test labels that report. A deployed program matches only with the constructor values it was deployed with (`--args`).
 
 - **template by name**: a `byte[32]` parameter named after another file (`kcc20_template`, `gen__init_bridge_mint_template`) gets that program's real template hash.
 - **template by role**: the template argument of `readInputStateWithTemplate`, `validateOutputStateWithTemplate` or `validateOutputStateWithInputTemplate` is another program of the project whatever it is called (`expectedTemplateHash`); with one other program to choose from it is that one, and length arguments in the same call (`templatePrefixLen`) get that program's prefix and suffix lengths.
@@ -154,7 +168,7 @@ On those spends the `family` attacks change what the new coins say and run the r
 
 **What was minted, spent.** A coin a family spend created is then spent by its owner with its own program's entries (a minted KCC-20 cell moved with `transfer`, signed by the depositor the data named), and those spends are attacked in that program's report as `minted:...` paths. If no entry can move it, the report says the minted coins may be stuck.
 
-Not yet covered: spends that need a program's coin the project does not include.
+Not yet covered from sources: spends that need a program's coin the project does not include. In real transactions, KCC-20 reference cells need no file (see Known programs).
 
 ## Web page
 
@@ -305,6 +319,7 @@ inventory::submit! { CovenantPlugin(&Out02) }
 ```
 crates/redteam-core       findings, report, badge, shared types
 crates/redteam-covenant   compile, spend search, judge, covenant attacks
+  library/                known programs shipped with the tool (KCC-20 reference, with its notice)
 crates/redteam-node       simnet harness, mainnet guard, node/mining attacks
 crates/kaspa-redteam      the CLI, the web page, fetch (the only part that goes online)
 fixtures/<ID>/            vulnerable.sil + fixed.sil per attack
