@@ -1,0 +1,32 @@
+[package]
+name = "kcc20-analyzer"
+description = "Program bytes in, report JSON out: what a Kaspa covenant program lets an outsider do, witnessed by mutating its real spends under the real script engine"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/kasperolabs/kaspa-redteam"
+publish = false
+
+# Its own workspace: the engine here is rusty-kaspa at the revision argent-lang/kcc20-reference pins
+# (a41a333b), not the crates.io 2.1.0 the rest of kaspa-redteam builds against.
+[workspace]
+
+[[bin]]
+name = "kcc20-analyzer"
+path = "src/main.rs"
+
+[dependencies]
+kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a333b08848f41bf737b72592e463a6011b8ac" }
+kaspa-txscript = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a333b08848f41bf737b72592e463a6011b8ac" }
+kaspa-hashes = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a333b08848f41bf737b72592e463a6011b8ac" }
+kaspa-addresses = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a333b08848f41bf737b72592e463a6011b8ac" }
+secp256k1 = { version = "0.29", features = ["global-context", "rand-std"] }
+serde_json = "1"
+blake2b_simd = "1.0.2"
+blake3 = "1.8.7"
+sha2 = "0.10"
+faster-hex = "0.10"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3

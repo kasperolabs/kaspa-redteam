@@ -314,6 +314,13 @@ inventory::submit! { CovenantPlugin(&Out02) }
 
 `cargo test` fails if an attack has no fixtures, misses its vulnerable fixture, or raises anything on its fixed fixture.
 
+## Program analyzer (no source needed)
+
+`analyzer/` holds `kcc20-analyzer`, a separate binary for programs already on chain: it takes a program's bytes and
+its real spends, mutates those spends one change at a time and has the real script engine judge each one, then
+reports what an outsider can do, with the accepted transaction as evidence. It feeds the KCC-20 token safety labels in
+SilverScript Studio. See [analyzer/README.md](analyzer/README.md).
+
 ## Layout
 
 ```
