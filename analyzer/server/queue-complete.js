@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 // analyzer/server/queue-complete.js: make every cached spend in an analyzer queue export complete, so the analyzer
-// can rebuild it. marker kcc20-analyzer-queue-complete-2026-11-05
+// can rebuild it. marker kcc20-analyzer-queue-complete-2026-11-06
+// 2026-11-06: a rate limit (HTTP 429) or any REST failure no longer ends the run. Calls are paced (KASPA_API_MIN_MS,
+// default 250 ms apart), a 429 waits (Retry-After, else 2, 4, 8 … s, at most 60 s) and tries again up to 6 times (a 5xx up to 3),
+// and a run has a call budget (--max-calls, default 400). A spend that still cannot be fetched keeps `fetch_error`, a
+// follow that fails is skipped with a log line, and the queue is always written out with what was gathered (exit 0).
+// Exit 1 only for an unreadable input file. previous: kcc20-analyzer-queue-complete-2026-11-05
 //
 //   node queue-complete.js kcc20-analyzer-queue.json > queue-complete.json
 //   node queue-complete.js --only-verified kcc20-analyzer-queue.json > queue-complete.json
-//   node queue-complete.js --only-verified --follow 6 kcc20-analyzer-queue.json > queue-complete.json
+//   node queue-complete.js --only-verified --follow 6 --max-calls 400 kcc20-analyzer-queue.json > queue-complete.json
 //
 // --follow N: for a program with fewer than N spends, follow the program's own next coin (the output bound to the
 // spent coin's covenant and authorized by it) to the transaction that spent it, until N spends are collected.
@@ -17,26 +22,37 @@
 'use strict';
 const fs = require('fs');
 const API = (process.env.KASPA_API || 'https://api.kaspa.org').replace(/\/$/, '');
+const MIN_MS = Number(process.env.KASPA_API_MIN_MS || 250);
 const args = process.argv.slice(2);
+const argOf = k => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : undefined; };
 const onlyVerified = args.includes('--only-verified');
-const followIdx = args.indexOf('--follow');
-const follow = followIdx >= 0 ? Number(args[followIdx + 1]) || 6 : 0;
-const file = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--follow');
-if (!file) { console.error('usage: node queue-complete.js [--only-verified] <queue.json>'); process.exit(2); }
+const follow = args.includes('--follow') ? Number(argOf('--follow')) || 6 : 0;
+const maxCalls = Number(argOf('--max-calls') || process.env.KASPA_API_MAX_CALLS || 400);
+const file = args.find((a, i) => !a.startsWith('--') && !['--follow', '--max-calls'].includes(args[i - 1]));
+if (!file) { console.error('usage: node queue-complete.js [--only-verified] [--follow N] [--max-calls N] <queue.json>'); process.exit(2); }
 const log = (...a) => console.error('[complete]', ...a);
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+let calls = 0, last = 0, limited = 0;
+class Budget extends Error {}
+// one REST call: paced, retried on 429 and 5xx; null for 404; throws Budget when the run's calls are spent
 async function get(path) {
-    for (let attempt = 1; attempt <= 4; attempt++) {
-        try {
-            const r = await fetch(API + path, { headers: { accept: 'application/json' } });
-            if (r.status === 404) return null;
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            return await r.json();
-        } catch (e) {
-            if (attempt === 4) throw e;
-            await sleep(500 * attempt);
+    for (let attempt = 1; ; attempt++) {
+        if (calls >= maxCalls) throw new Budget(`call budget of ${maxCalls} reached`);
+        const wait = last + MIN_MS - Date.now(); if (wait > 0) await sleep(wait);
+        last = Date.now(); calls++;
+        let r;
+        try { r = await fetch(API + path, { headers: { accept: 'application/json' } }); }
+        catch (e) { if (attempt >= 6) throw e; await sleep(Math.min(60000, 1000 * 2 ** attempt)); continue; }
+        if (r.status === 404) return null;
+        if (r.ok) return await r.json();
+        if ((r.status === 429 && attempt < 6) || (r.status >= 500 && attempt < 3)) {
+            if (r.status === 429) limited++;
+            const ra = Number(r.headers.get('retry-after'));
+            await sleep(Math.min(60000, Number.isFinite(ra) && ra > 0 ? ra * 1000 : 1000 * 2 ** attempt));
+            continue;
         }
+        throw new Error(`HTTP ${r.status}`);
     }
 }
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -46,45 +62,50 @@ function complete(tx) {
         && (i.previous_outpoint_address || i.previous_outpoint_script)
         && has(i, 'covenant_id'));
 }
+// Some API answers leave the input covenant ids out. Each one is the covenant of the output it spent, which the
+// previous transaction states (null for a plain coin).
+async function fillCovenants(t) {
+    for (const i of t.inputs || []) {
+        if (has(i, 'covenant_id')) continue;
+        const prev = await get(`/transactions/${i.previous_outpoint_hash}?inputs=false&outputs=true&resolve_previous_outpoints=no`);
+        const o = prev && (prev.outputs || []).find(x => Number(x.index) === Number(i.previous_outpoint_index));
+        if (!o) continue;
+        if (!i.previous_outpoint_script && o.script_public_key) i.previous_outpoint_script = o.script_public_key;
+        i.covenant_id = o.covenant_id && o.covenant_id !== 'None' ? o.covenant_id : null;
+        i.covenant_id_from = 'previous transaction output';
+    }
+}
 
 (async () => {
-    const q = JSON.parse(fs.readFileSync(file, 'utf8'));
-    const programs = Array.isArray(q) ? q : q.programs;
-    let fetched = 0, kept = 0, failed = 0;
+    let q;
+    try { q = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { log(`cannot read ${file}: ${e.message}`); process.exit(1); }
+    const programs = Array.isArray(q) ? q : (q.programs || []);
+    let fetched = 0, kept = 0, failed = 0, followed = 0, budgetHit = false;
     for (const p of programs) {
         if (onlyVerified && Number(p.verified) !== 1) continue;
-        const spends = p.spends || p.transactions || p.txs || [];
-        for (const s of spends) {
+        for (const s of p.spends || p.transactions || p.txs || []) {
             const txid = s.txid || (s.tx && s.tx.transaction_id);
             if (complete(s.tx)) { kept++; continue; }
+            if (budgetHit) { s.fetch_error = 'call budget reached; fetched next run'; failed++; continue; }
             try {
                 const t = await get(`/transactions/${txid}?inputs=true&outputs=true&resolve_previous_outpoints=light`);
                 if (!t) { failed++; s.fetch_error = 'not found'; log(`${txid}: not found`); continue; }
-                s.tx = t; s.refetched = new Date().toISOString(); fetched++;
-                // Some API answers leave the input covenant ids out. Each one is the covenant of the output it spent,
-                // which the previous transaction states (null for a plain coin).
-                for (const i of t.inputs || []) {
-                    if (has(i, 'covenant_id')) continue;
-                    const prev = await get(`/transactions/${i.previous_outpoint_hash}?inputs=false&outputs=true&resolve_previous_outpoints=no`);
-                    const o = prev && (prev.outputs || []).find(x => Number(x.index) === Number(i.previous_outpoint_index));
-                    if (!o) continue;
-                    if (!i.previous_outpoint_script && o.script_public_key) i.previous_outpoint_script = o.script_public_key;
-                    i.covenant_id = o.covenant_id && o.covenant_id !== 'None' ? o.covenant_id : null;
-                    i.covenant_id_from = 'previous transaction output';
-                    await sleep(80);
-                }
+                await fillCovenants(t);
+                s.tx = t; s.refetched = new Date().toISOString(); fetched++; delete s.fetch_error;
                 if (!complete(t)) { s.fetch_error = 'still incomplete after fetch'; log(`${txid}: still incomplete`); }
-            } catch (e) { failed++; s.fetch_error = e.message; log(`${txid}: ${e.message}`); }
-            await sleep(120);
+            } catch (e) {
+                failed++; s.fetch_error = e.message;
+                if (e instanceof Budget) { budgetHit = true; log(e.message + '; the rest waits for the next run'); } else log(`${txid}: ${e.message}`);
+            }
         }
     }
-    let followed = 0;
     if (follow) for (const p of programs) {
+        if (budgetHit) break;
         if (onlyVerified && Number(p.verified) !== 1) continue;
         const spends = p.spends || (p.spends = []);
         const have = new Set(spends.map(s => s.txid));
         const queue = spends.slice();
-        while (spends.length < follow && queue.length) {
+        while (spends.length < follow && queue.length && !budgetHit) {
             const s = queue.shift(), t = s.tx;
             if (!t || !t.inputs) continue;
             // inputs that spent this program: their covenant's outputs authorized by them are the next coins
@@ -94,30 +115,26 @@ function complete(tx) {
                 for (const o of t.outputs) if (o.covenant_id === i.covenant_id && Number(o.covenant_authorizing_input) === k) nexts.push(o);
             });
             for (const o of nexts) {
-                if (spends.length >= follow) break;
+                if (spends.length >= follow || budgetHit) break;
                 const addr = o.script_public_key_address;
                 if (!addr) continue;
-                let hist;
-                try { hist = await get(`/addresses/${addr}/full-transactions?limit=20&offset=0&resolve_previous_outpoints=light`); } catch (e) { log(`${addr}: ${e.message}`); continue; }
-                const spender = (hist || []).find(h => (h.inputs || []).some(i => i.previous_outpoint_hash === (t.transaction_id || s.txid) && Number(i.previous_outpoint_index) === Number(o.index)));
-                if (!spender || have.has(spender.transaction_id)) continue;
-                // the history copy can lack input covenant ids: fetch the transaction itself
-                let full = await get(`/transactions/${spender.transaction_id}?inputs=true&outputs=true&resolve_previous_outpoints=light`);
-                if (!full) continue;
-                for (const i of full.inputs || []) {
-                    if (has(i, 'covenant_id')) continue;
-                    const prev = await get(`/transactions/${i.previous_outpoint_hash}?inputs=false&outputs=true&resolve_previous_outpoints=no`);
-                    const po = prev && (prev.outputs || []).find(x => Number(x.index) === Number(i.previous_outpoint_index));
-                    if (!po) continue;
-                    if (!i.previous_outpoint_script && po.script_public_key) i.previous_outpoint_script = po.script_public_key;
-                    i.covenant_id = po.covenant_id && po.covenant_id !== 'None' ? po.covenant_id : null;
+                try {
+                    const hist = await get(`/addresses/${addr}/full-transactions?limit=20&offset=0&resolve_previous_outpoints=light`);
+                    const spender = (hist || []).find(h => (h.inputs || []).some(i => i.previous_outpoint_hash === (t.transaction_id || s.txid) && Number(i.previous_outpoint_index) === Number(o.index)));
+                    if (!spender || have.has(spender.transaction_id)) continue;
+                    // the history copy can lack input covenant ids: fetch the transaction itself
+                    const full = await get(`/transactions/${spender.transaction_id}?inputs=true&outputs=true&resolve_previous_outpoints=light`);
+                    if (!full) continue;
+                    await fillCovenants(full);
+                    const ns = { txid: full.transaction_id, tx: full, followed_from: s.txid };
+                    spends.push(ns); queue.push(ns); have.add(full.transaction_id); followed++;
+                } catch (e) {
+                    if (e instanceof Budget) { budgetHit = true; log(e.message + ' while following next coins; the rest waits for the next run'); }
+                    else log(`following ${addr}: ${e.message} (skipped)`);
                 }
-                const ns = { txid: full.transaction_id, tx: full, followed_from: s.txid };
-                spends.push(ns); queue.push(ns); have.add(full.transaction_id); followed++;
-                await sleep(120);
             }
         }
     }
-    log(`${kept} already complete, ${fetched} fetched again, ${failed} failed, ${followed} found by following next coins`);
+    log(`${kept} already complete, ${fetched} fetched again, ${failed} failed, ${followed} found by following next coins; ${calls} REST calls${limited ? `, ${limited} rate-limit waits` : ''}${budgetHit ? ', budget reached' : ''}`);
     process.stdout.write(JSON.stringify(q) + '\n');
 })().catch(e => { log(e.stack || e.message); process.exit(1); });
