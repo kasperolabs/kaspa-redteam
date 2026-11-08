@@ -98,6 +98,11 @@ pub fn upgrade_struct_literals(source: &str) -> (String, usize) {
 /// problem it is.
 pub fn prepare(file: &str, source: &str) -> Result<(String, Vec<String>)> {
     let Err(err) = parses(source) else { return Ok((source.to_string(), vec![])) };
+    if is_argent(file, source) {
+        return Err(anyhow!(
+            "{file} is Argent source, not SilverScript. The tool tests SilverScript: compile it with argentc and test the `sil/*.sil` files it generates, together, in one run (`kaspa-redteam sil/*.sil`). An Argent file that only declares an interface (state layouts and entries of contracts written in SilverScript) needs no testing of its own: test those `.sil` files instead."
+        ));
+    }
     let (up, n) = upgrade_struct_literals(source);
     if n > 0 {
         return match parses(&up) {
@@ -120,9 +125,34 @@ pub fn prepare(file: &str, source: &str) -> Result<(String, Vec<String>)> {
     Err(anyhow!("syntax error in {file}: {err}{hint}"))
 }
 
+/// An Argent file: by its extension, or by the words only Argent uses
+/// (`actor_type<..>`, `emits`, an `actor` block) in a file that is not SilverScript.
+fn is_argent(file: &str, source: &str) -> bool {
+    if file.to_ascii_lowercase().ends_with(".ag") {
+        return true;
+    }
+    let code: String = source.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+    !code.contains("pragma silverscript")
+        && (code.contains("actor_type<") || code.lines().any(|l| l.trim_start().starts_with("actor ")) || code.contains(" emits "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn argent_file_gets_a_plain_message() {
+        let src = "// an interface\nprotocol Orders {\n    actor Order(State s) {\n        entry fill(int n) emits [Order] { }\n    }\n}\n";
+        let e = prepare("orders.ag", src).unwrap_err().to_string();
+        assert!(e.contains("Argent source"), "{e}");
+        assert!(e.contains("sil/*.sil"), "{e}");
+        assert!(!e.contains("syntax error"), "{e}");
+        let e = prepare("orders.txt", src).unwrap_err().to_string();
+        assert!(e.contains("Argent source"), "{e}");
+        // A broken SilverScript file still gets the syntax error.
+        let e = prepare("c.sil", "pragma silverscript ^0.1.0;\ncontract C( {").unwrap_err().to_string();
+        assert!(e.contains("syntax error"), "{e}");
+    }
 
     #[test]
     fn upgrades_the_three_forms() {

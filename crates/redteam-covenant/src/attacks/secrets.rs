@@ -38,6 +38,7 @@ impl CovenantAttack for Sec01 {
                 ),
                 severity: None,
                 takeover: true,
+                benign: None,
             })
             .collect())
     }

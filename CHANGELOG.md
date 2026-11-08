@@ -1,5 +1,17 @@
 # Changelog
 
+## Tool 0.17.1 (library 0.10.1)
+
+From a production run on an order-book project (nine order contracts, a router generated from Argent, two KCC-20 builds) and its builder's harness dump of 1,913 transactions. Every change is tested on neutral fixtures; nothing from that project is in this repository.
+
+- Constructor files in silverc's own format: `[{"kind": "bytes", "value": [3, 3, ...]}, {"kind": "int", "value": 1}, ...]`, values in order, kinds `int`, `bool`, `byte`, `bytes` (an array of byte numbers or a hex string) and `pubkey`. Also on the web page ("Paste values instead"). In a project, values in order go to the one contract they fit by count and kind; the report names it. Before, `--args` refused the file.
+- Template links by abbreviated name: in a project, `ASK_TPL` is the template hash of the `...Ask` program and `ASK_PRE` / `ASK_SUF` its prefix and suffix lengths, with no `--args`. The closest name wins, and only when one file is closest. Before, such names were linked to the token program. A covenant id compared to a coin's still goes to the token when the file links to several programs. Fixture: `fixtures/project-links/`.
+- ST-01 on a split: a new coin the spender funds and names the owner of (anyone may split off a seat and name its owner, the original keeps its value) is not a takeover. The attack then tries to move the covenant's own value into that coin, and reports only if that works; the report notes which output it judged to be the spender's. OUT-03 shortening such a coin is a note, not a finding. The upstream PublicMint `split` comes back clean; a copy that pins the new seat to the original value is still caught (`fixtures/ST-01/split_*.sil`).
+- Baselines are checked exactly as given first, before any coin is swapped or any signature made again. A listed key's signature inside a 66-byte witness push (a path byte, then the signature: the KCC-20 owner witness on builds that are not the shipped reference) is found and signed again. Outputs paying a listed key stay byte for byte when the coins are kept as given. On the harness dump, the 201 transactions that only passed without keys now pass with them.
+- A baseline file with a bad transaction: one rejected or unreadable as given is skipped with a note naming it and why, and the rest are attacked. A file where nothing can be attacked still stops with the reasons. `fetch` keeps the strict check. A DAA lock time at or above the context DAA score raises the context to lock time + 1, with a note.
+- A dropped Argent file (`.ag`) gets a plain message instead of a syntax error: test the `sil/*.sil` files argentc generated from it, together.
+- Attacks can mark an accepted attempt as expected and harmless, with the reason; the report gets a note instead of a finding.
+
 ## Tool 0.17.0 (library 0.10.0)
 
 First live run on a KAS/KCC-20 pool's mainnet transactions: the token cells were opaque, the buyer's and seller's signatures made every trade a signed path, and 22 of 29 attacks were skipped. The same five transactions now run FAM-09, FAM-10 and BOR-01 against the pool, from a trader's seat, with no extra files.

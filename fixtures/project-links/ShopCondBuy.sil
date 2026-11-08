@@ -1,0 +1,12 @@
+// A conditional buy order: same shape as ShopBuy, one more field.
+pragma silverscript ^0.1.0;
+
+contract ShopCondBuy(pubkey init_maker, int init_amount, int init_trigger) {
+    pubkey maker = init_maker;
+    int amount = init_amount;
+    int trigger = init_trigger;
+
+    entry cancel(sig s) {
+        require(checkSig(s, maker));
+    }
+}

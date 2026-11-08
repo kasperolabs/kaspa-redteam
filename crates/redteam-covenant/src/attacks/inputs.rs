@@ -45,6 +45,7 @@ impl CovenantAttack for In01 {
                 ),
                 severity: None,
                 takeover: false,
+                benign: None,
             });
             // b) no room for an extra output: the second coin becomes fee
             let mut plan = b.plan.clone();
@@ -59,6 +60,7 @@ impl CovenantAttack for In01 {
                 ),
                 severity: Some(Severity::Med),
                 takeover: false,
+                benign: None,
             });
         }
         Ok(out)
@@ -118,6 +120,7 @@ impl CovenantAttack for In02 {
                 ),
                 severity: None,
                 takeover: false,
+                benign: None,
             });
         }
         Ok(out)

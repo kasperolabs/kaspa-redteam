@@ -703,7 +703,7 @@ mod tests {
             let f = dir.join("b.json");
             std::fs::write(&f, serde_json::to_string(&got.doc).unwrap()).unwrap();
             let c = Contract::for_import("b.json", std::fs::read(&f).unwrap().as_slice());
-            let paths = redteam_covenant::import::load(&f, &c, &Judge::new())
+            let paths = redteam_covenant::import::load_strict(&f, &c, &Judge::new())
                 .unwrap_or_else(|e| panic!("{file}: {e:#}\n{}", serde_json::to_string(&got.doc).unwrap()));
             assert_eq!(paths.len(), 1);
             let _ = std::fs::remove_dir_all(&dir);

@@ -155,6 +155,16 @@ mod tests {
 
 /// Every 65-byte push in a script, as the byte offset of its data.
 pub fn sig_push_offsets(script: &[u8]) -> Vec<usize> {
+    push_offsets(script, false)
+}
+
+/// `sig_push_offsets`, plus the signature inside a 66-byte witness push (a
+/// path byte, then a 65-byte signature): places a listed key's signature may be.
+pub fn sig_and_witness_offsets(script: &[u8]) -> Vec<usize> {
+    push_offsets(script, true)
+}
+
+fn push_offsets(script: &[u8], witness: bool) -> Vec<usize> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < script.len() {
@@ -178,6 +188,11 @@ pub fn sig_push_offsets(script: &[u8]) -> Vec<usize> {
         };
         if len == 65 && i + 65 <= script.len() {
             out.push(i);
+        }
+        // A token witness: one path byte, then the signature and its type
+        // (the KCC-20 owner witness). Only used where a listed key verifies it.
+        if witness && len == 66 && i + 66 <= script.len() {
+            out.push(i + 1);
         }
         i += len;
     }

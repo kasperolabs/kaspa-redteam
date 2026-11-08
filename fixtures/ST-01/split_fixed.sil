@@ -1,0 +1,22 @@
+// ST-01, not a finding: anyone may split a new seat off this one and name its
+// owner. The original seat keeps its own value (output a), so the new seat's
+// value comes from the spender's own coins: owning it takes nothing from anyone.
+pragma silverscript ^0.1.0;
+
+contract Seat(pubkey init_owner, int init_remaining) {
+    pubkey owner = init_owner;
+    int remaining = init_remaining;
+
+    entry split(int take, pubkey new_owner) {
+        byte[32] id = OpInputCovenantId(this.activeInputIndex);
+        require(OpCovInputCount(id) == 1);
+        require(OpAuthOutputCount(this.activeInputIndex) == 2);
+        int a = OpAuthOutputIdx(this.activeInputIndex, 0);
+        int b = OpAuthOutputIdx(this.activeInputIndex, 1);
+        require(take > 0);
+        require(take <= remaining / 2);
+        require(tx.outputs[a].value == tx.inputs[this.activeInputIndex].value);
+        validateOutputState(a, State { owner: owner, remaining: remaining - take });
+        validateOutputState(b, State { owner: new_owner, remaining: take });
+    }
+}

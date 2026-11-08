@@ -26,6 +26,9 @@ pub struct Attempt {
     /// Accepted = the attacker can take everything on this path. Later
     /// attacks skip compromised paths instead of piling on.
     pub takeover: bool,
+    /// Accepted is expected and harmless for this reason (a tip the covenant
+    /// pays whoever spends it, say): the report gets a note instead of a finding.
+    pub benign: Option<String>,
 }
 
 pub struct AttackCx<'a> {
@@ -33,9 +36,17 @@ pub struct AttackCx<'a> {
     pub judge: &'a Judge,
     pub paths: &'a [PathStatus],
     compromised: RefCell<BTreeSet<String>>,
+    notes: RefCell<Vec<String>>,
 }
 
 impl AttackCx<'_> {
+    /// A note for the report (an attack that did not apply for a reason worth saying).
+    pub fn note(&self, s: String) {
+        let mut n = self.notes.borrow_mut();
+        if !n.contains(&s) {
+            n.push(s);
+        }
+    }
     pub fn is_compromised(&self, path: &str) -> bool {
         self.compromised.borrow().contains(path)
     }
@@ -101,7 +112,7 @@ pub fn run_paths_timed(
     let judge = Judge::new();
     let imported_count = imported.len();
     paths.extend(imported);
-    let cx = AttackCx { contract, judge: &judge, paths: &paths, compromised: RefCell::new(BTreeSet::new()) };
+    let cx = AttackCx { contract, judge: &judge, paths: &paths, compromised: RefCell::new(BTreeSet::new()), notes: RefCell::new(Vec::new()) };
 
     let mut results = Vec::new();
     for attack in registry() {
@@ -128,6 +139,7 @@ pub fn run_paths_timed(
     }
 
     let mut notes = extra_notes;
+    notes.extend(cx.notes.borrow().iter().cloned());
     let mut noted = BTreeSet::new();
     for p in &paths {
         let explored_somewhere = paths.iter().any(|q| q.name == p.name && q.baseline.is_some());
@@ -192,6 +204,10 @@ fn judge_attempts(cx: &AttackCx, meta: &'static AttackMeta, list: Vec<Attempt>) 
         }
         attempts += 1;
         let (verdict, built) = cx.judge.run(cx.contract, &a.plan);
+        if let (Verdict::Accepted { .. }, Some(why)) = (&verdict, &a.benign) {
+            cx.note(format!("{} on `{}`: {} ({why}); a note, not a finding", meta.id, a.path, a.label));
+            continue;
+        }
         if let (Verdict::Accepted { fee }, Some(b)) = (verdict, built) {
             hit_paths.insert(a.path.clone());
             if a.takeover {

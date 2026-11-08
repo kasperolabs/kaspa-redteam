@@ -5,7 +5,8 @@
 //! the next state freely, the attacker writes their own key there and owns it.
 
 use crate::runner::{AttackCx, Attempt, CovenantAttack, CovenantPlugin};
-use crate::sandbox::Dest;
+use crate::sandbox::{Dest, SpendPlan};
+use crate::wallets::KeyRef;
 use redteam_core::{AttackMeta, Severity, Target};
 use silverscript_abi::{ArtifactValue, TypeArtifact};
 
@@ -59,6 +60,31 @@ impl CovenantAttack for St01 {
                     let mut next = st.clone();
                     next.insert((*f).clone(), ArtifactValue::Bytes(attacker.clone()));
                     plan.outputs[j].to = Dest::Successor(next);
+                    // A sibling coin the spender creates and pays for (a split
+                    // naming the new coin's owner): owning it gives the spender
+                    // nothing it did not pay in, as long as the covenant's own
+                    // value stays in its other coins. Then the test is whether
+                    // the covenant's value can be moved into that coin.
+                    if let Some(shifted) = funded_by_spender(&plan, j, &cx.contract.wallets.attacker.keypair) {
+                        cx.note(format!(
+                            "ST-01 on `{}`: output {j} is a new coin the spender funds (`{f}` names its owner); owning it gives nothing the spender did not pay for, so the test was whether the covenant's own value can be moved into it",
+                            p.entry
+                        ));
+                        out.push(Attempt {
+                            path: p.entry.clone(),
+                            label: format!("output {j}: `{f}` rewritten to the attacker's key, with the covenant's value moved into it"),
+                            plan: shifted.0,
+                            explanation: format!(
+                                "anyone can spend this coin, write their own key into `{f}` of the new coin at output {j}, and move {} of the covenant's value into it from output {}: the attacker now owns covenant value it did not pay for.",
+                                super::kas(shifted.2),
+                                shifted.1
+                            ),
+                            severity: None,
+                            takeover: true,
+                            benign: None,
+                        });
+                        continue;
+                    }
                     out.push(Attempt {
                         path: p.entry.clone(),
                         label: format!("output {j}: `{f}` rewritten to the attacker's key"),
@@ -69,6 +95,7 @@ impl CovenantAttack for St01 {
                         ),
                         severity: None,
                         takeover: true,
+                        benign: None,
                     });
                 }
             }
@@ -80,3 +107,24 @@ impl CovenantAttack for St01 {
     }
 }
 inventory::submit! { CovenantPlugin(&St01) }
+
+/// When output `j` of `plan` is a coin the spender's own inputs pay for
+/// (`super::spender_funded`), the same spend with part of the covenant's value
+/// moved from its largest other coin into `j` and the spender's own money
+/// given back as change: (plan, the other output, amount).
+fn funded_by_spender(plan: &SpendPlan, j: usize, attacker: &secp256k1::Keypair) -> Option<(SpendPlan, usize, u64)> {
+    if !super::spender_funded(plan, j, attacker) {
+        return None;
+    }
+    let is_cov = |o: &crate::sandbox::OutputSpec| matches!(o.to, Dest::Successor(_) | Dest::SelfCovenant);
+    let vj = plan.outputs[j].value;
+    let (k, ok) = plan.outputs.iter().enumerate().filter(|(k, o)| *k != j && is_cov(o)).max_by_key(|(_, o)| o.value)?;
+    let delta = vj.min(ok.value / 2);
+    if delta == 0 {
+        return None;
+    }
+    let mut p = plan.clone();
+    p.outputs[k].value -= delta;
+    p.outputs.push(crate::sandbox::OutputSpec::new(delta, Dest::Key(KeyRef::Attacker)));
+    Some((p, k, delta))
+}

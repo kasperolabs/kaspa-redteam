@@ -1,0 +1,11 @@
+// A buy order of a small shop: the maker cancels it with their key.
+pragma silverscript ^0.1.0;
+
+contract ShopBuy(pubkey init_maker, int init_amount) {
+    pubkey maker = init_maker;
+    int amount = init_amount;
+
+    entry cancel(sig s) {
+        require(checkSig(s, maker));
+    }
+}

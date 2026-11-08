@@ -575,7 +575,7 @@ fn verify_fetched(text: &str) -> Result<()> {
     let f = dir.join("fetched.json");
     std::fs::write(&f, text)?;
     let contract = redteam_covenant::contract::Contract::for_import("fetched.json", text.as_bytes());
-    let r = redteam_covenant::import::load(&f, &contract, &redteam_covenant::sandbox::Judge::new());
+    let r = redteam_covenant::import::load_strict(&f, &contract, &redteam_covenant::sandbox::Judge::new());
     let _ = std::fs::remove_dir_all(&dir);
     r.map(|_| ()).context("the fetched transactions do not replay in the tool's consensus judge; nothing was written. Please report this with the transaction ids")
 }

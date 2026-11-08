@@ -29,6 +29,7 @@ impl CovenantAttack for Fam {
                     // that holder alone gains, from tokens sent by mistake.
                     severity: (id == "FAM-10" && !b.permissionless()).then_some(Severity::Med),
                     takeover: false,
+                    benign: None,
                 })
             })
             .collect();

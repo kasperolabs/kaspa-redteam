@@ -9,7 +9,7 @@ kaspa-redteam curve.sil --baseline honest.json       # search + imported, one re
 kaspa-redteam export vault.sil > example.json        # a working file to copy from
 ```
 
-Nothing is sent anywhere. The file is read, every transaction is first checked by the consensus judge exactly as given (a baseline consensus already rejects proves nothing, so the run stops with the reason), then the attacks mutate it.
+Nothing is sent anywhere. The file is read, every transaction is first checked by the consensus judge exactly as given, before anything is swapped or signed again. A transaction consensus rejects as given proves nothing, so it is skipped and the report says which one and why (`2 of 40 transaction(s) skipped, not attacked: ...`); the rest are attacked. Only a file where no transaction can be attacked stops the run. A transaction with a DAA lock time at or above the context DAA score (`lockTime` below 500,000,000,000) is judged in a block at lock time + 1, with a note.
 
 ## Format `kaspa-redteam/baseline/1`
 
@@ -87,7 +87,7 @@ rusty-kaspa's JSON for `UtxoEntry`:
 - **Covenant inputs** (`targets`) stay byte for byte as given: their signature scripts, redeem scripts, witnesses. Attacks may add a second copy (IN-01) or put a coin in front (IN-02).
 - **Plain pay-to-pubkey inputs** (the coins that pay the fee or fund a purchase) are treated as the attacker's own: the tool swaps them for test coins of the same value and re-signs them, so outputs can change. Change outputs that went back to those coins go to the attacker.
 - **If a covenant input carries a transaction signature** (a 65-byte push ending in a sighash type byte, or the owner's signature inside a KCC-20 reference cell's `witness`) that no listed key made, the path is treated as signed: an outsider cannot change outputs without that key, so only the attacks that make sense for an outsider run, and funding coins are kept verbatim (re-signing them would break the covenant signature, which commits to every input).
-- **If a listed key made it** (`keys`), the signature is the attacker's own: the tool signs again after every change, and the path is attacked from that signer's seat. This is how a user-signed path (a seller signing for their own token coin) gets tested: can the signer take more than the covenant allows?
+- **If a listed key made it** (`keys`), the signature is the attacker's own: the tool signs again after every change, and the path is attacked from that signer's seat. A listed key's signature is found as a 65-byte push, inside a token witness push (one path byte, then the signature: the KCC-20 owner witness, on any build of it), or where a recognized program's witness puts it. If signing again still breaks the transaction (a signature format the tool does not know), it is attacked as given, from the seat of someone who cannot sign, and the report says so. This is how a user-signed path (a seller signing for their own token coin) gets tested: can the signer take more than the covenant allows?
 
 ### Which keys to list
 

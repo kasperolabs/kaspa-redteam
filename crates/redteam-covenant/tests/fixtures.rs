@@ -52,3 +52,19 @@ fn every_attack_has_fixtures_and_they_behave() {
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
+
+/// ST-01 on a split: a new coin the spender funds and names the owner of is
+/// not a takeover (the fixed seat stays clean), but moving the covenant's own
+/// value into it is (the vulnerable seat is caught).
+#[test]
+fn st01_split_funded_by_the_spender() {
+    let dir = fixtures_dir().join("ST-01");
+    let r = run(&load(&dir.join("split_fixed.sil")), &[], vec![]);
+    let noise: Vec<_> = r.findings().map(|f| format!("{}@{}", f.id, f.subject)).collect();
+    assert!(noise.is_empty(), "fixed split raised {noise:?}; notes {:?}", r.notes);
+    assert!(r.notes.iter().any(|n| n.contains("ST-01") && n.contains("the spender funds")), "{:?}", r.notes);
+    assert!(!r.notes.iter().any(|n| n.contains("unexplored")), "{:?}", r.notes);
+    let r = run(&load(&dir.join("split_vulnerable.sil")), &[], vec![]);
+    assert!(r.findings().any(|f| f.id == "ST-01"), "vulnerable split not caught: {:?}; notes {:?}",
+        r.findings().map(|f| format!("{}@{}", f.id, f.subject)).collect::<Vec<_>>(), r.notes);
+}

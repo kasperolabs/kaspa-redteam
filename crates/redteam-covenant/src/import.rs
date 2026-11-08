@@ -2,8 +2,8 @@
 //! families, sibling programs, computed outputs), the builder hands the tool
 //! honest transactions from their own test harness and the attacks mutate
 //! those. Format: BASELINE.md. Every imported transaction must first pass the
-//! judge as given; otherwise the run stops, because mutating a transaction
-//! consensus already rejects proves nothing.
+//! judge exactly as given; one that does not is skipped with a note, because
+//! mutating a transaction consensus already rejects proves nothing.
 
 use crate::baseline::{Baseline, PathStatus};
 use crate::contract::Contract;
@@ -128,6 +128,22 @@ pub fn load_with(
     judge: &Judge,
     partners: &[crate::known::Pin],
 ) -> Result<(Vec<PathStatus>, Vec<String>)> {
+    load_inner(path, contract, judge, partners, false)
+}
+
+/// `load`, but any transaction that cannot be attacked as given is an error
+/// (for `fetch`: a fetched transaction that does not replay means the rebuild is wrong).
+pub fn load_strict(path: &std::path::Path, contract: &Contract, judge: &Judge) -> Result<Vec<PathStatus>> {
+    Ok(load_inner(path, contract, judge, &[], true)?.0)
+}
+
+fn load_inner(
+    path: &std::path::Path,
+    contract: &Contract,
+    judge: &Judge,
+    partners: &[crate::known::Pin],
+    strict: bool,
+) -> Result<(Vec<PathStatus>, Vec<String>)> {
     let mut pins: Vec<crate::known::Pin> = crate::known::builtin().to_vec();
     pins.extend(partners.iter().cloned());
     let mut notes = Vec::new();
@@ -148,10 +164,29 @@ pub fn load_with(
     };
 
     let mut out = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    let mut raised: Vec<String> = Vec::new();
     for (n, item) in txs.iter().enumerate() {
         let label = item.get("path").and_then(|p| p.as_str()).map(String::from).unwrap_or_else(|| format!("tx{n}"));
-        let ctx = |e: anyhow::Error| e.context(format!("{}: transaction `{label}`", path.display()));
-        let (mut plan, verbatim) = parse_one(item, file_daa, file_time, &keys, contract, judge, &pins).map_err(ctx)?;
+        // One bad transaction does not stop the file: it is skipped with the
+        // reason, and the rest are attacked.
+        let parsed = match parse_one(item, file_daa, file_time, &keys, contract, judge, &pins) {
+            Ok(p) => p,
+            Err(e) => {
+                skipped.push(format!("`{label}` ({e:#})"));
+                continue;
+            }
+        };
+        if let Some((from, to)) = parsed.raised_daa {
+            raised.push(format!("`{label}` ({from} -> {to})"));
+        }
+        // First the transaction exactly as given: nothing swapped, nothing
+        // signed again. A baseline consensus rejects proves nothing.
+        if let (Verdict::Rejected(why), _) = judge.run(contract, &parsed.as_given) {
+            skipped.push(format!("`{label}` (rejected by consensus as given: {why})"));
+            continue;
+        }
+        let Parsed { mut plan, verbatim, as_given, .. } = parsed;
         if let (Verdict::Rejected(why), _) = judge.run(contract, &plan) {
             // The plain coins were swapped for the attacker's own. A covenant
             // that pins a coin to its owner (`tx.inputs[1].scriptPubKey ==
@@ -162,10 +197,15 @@ pub fn load_with(
             }
             match verbatim {
                 Some(v) if matches!(judge.run(contract, &v).0, Verdict::Accepted { .. }) => plan = v,
-                _ => bail!(
-                    "{}: transaction `{label}` is rejected by consensus as given ({why}); fix the baseline first",
-                    path.display()
-                ),
+                _ => {
+                    // Signing again with a listed key broke a signature the
+                    // tool does not know the format of: attack it as given, as
+                    // an outsider who cannot sign.
+                    notes.push(format!(
+                        "`{label}`: passes as given, but not once the tool signs it again with a listed key ({why}); attacked as given, from the seat of someone who cannot sign"
+                    ));
+                    plan = as_given;
+                }
             }
         }
         // Signed by a user next to an unsigned covenant: take that user's seat.
@@ -212,7 +252,44 @@ pub fn load_with(
             imported: true,
         });
     }
+    if !raised.is_empty() {
+        notes.push(format!(
+            "{}: {} transaction(s) have a DAA lock time at or above the context DAA score; judged in a block at lock time + 1 instead: {}",
+            path.display(),
+            raised.len(),
+            short_list(&raised)
+        ));
+    }
+    if !skipped.is_empty() {
+        if strict {
+            bail!("{}: {}", path.display(), short_list(&skipped));
+        }
+        if out.is_empty() {
+            bail!(
+                "{}: no transaction can be attacked; every one is rejected or unreadable as given. Fix the baseline first: {}",
+                path.display(),
+                short_list(&skipped)
+            );
+        }
+        notes.push(format!(
+            "{}: {} of {} transaction(s) skipped, not attacked: {}",
+            path.display(),
+            skipped.len(),
+            txs.len(),
+            short_list(&skipped)
+        ));
+    }
     Ok((out, notes))
+}
+
+/// The first few items, then how many more.
+fn short_list(items: &[String]) -> String {
+    const SHOW: usize = 5;
+    let mut s = items.iter().take(SHOW).cloned().collect::<Vec<_>>().join("; ");
+    if items.len() > SHOW {
+        s.push_str(&format!("; and {} more", items.len() - SHOW));
+    }
+    s
 }
 
 /// Throwaway keys the harness signed with (`"keys": ["<64 hex>"]`). Any
@@ -249,9 +326,13 @@ fn find_resigns(
     for (i, s) in specs.iter().enumerate() {
         let sighash = calc_schnorr_signature_hash(&populated, i, SIG_HASH_ALL, &reused);
         let msg = secp256k1::Message::from_digest_slice(sighash.as_bytes().as_slice()).expect("32-byte digest");
-        let mut offsets = script::sig_push_offsets(&s.signature_script);
+        let mut offsets = script::sig_and_witness_offsets(&s.signature_script);
         if let Some(rec) = crate::known::recognize(&s.signature_script, pins) {
             offsets.extend(crate::known::witness_signatures(&rec).iter().filter(|w| w.schnorr).map(|w| w.at));
+        }
+        offsets.dedup();
+        if crate::debug_on() {
+            eprintln!("[resign] input {i}: candidate signature offsets {offsets:?}");
         }
         'offsets: for at in offsets {
             let b = &s.signature_script[at..at + 65];
@@ -270,6 +351,19 @@ fn find_resigns(
     Ok(out)
 }
 
+/// One imported transaction, read three ways.
+struct Parsed {
+    /// What the attacks start from: plain coins swapped for the attacker's,
+    /// signatures a listed key made signed again after each change.
+    plan: SpendPlan,
+    /// The same with every coin kept as given (signatures still re-signed).
+    verbatim: Option<SpendPlan>,
+    /// The transaction exactly as given: nothing swapped, nothing re-signed.
+    as_given: SpendPlan,
+    /// The context DAA was raised to the transaction's DAA lock time + 1.
+    raised_daa: Option<(u64, u64)>,
+}
+
 /// The plan to attack and, when plain coins were swapped for the attacker's
 /// own, the same transaction with every coin kept as given.
 fn parse_one(
@@ -280,7 +374,7 @@ fn parse_one(
     contract: &Contract,
     judge: &Judge,
     pins: &[crate::known::Pin],
-) -> Result<(SpendPlan, Option<SpendPlan>)> {
+) -> Result<Parsed> {
     let tx = item.get("tx").ok_or_else(|| anyhow!("missing `tx`"))?;
     let utxos =
         item.get("utxos").and_then(|u| u.as_array()).ok_or_else(|| anyhow!("missing `utxos` (one per input)"))?;
@@ -366,7 +460,14 @@ fn parse_one(
         None | Some(Value::Null) => vec![],
         Some(p) => hex(p, "payload")?,
     };
-    let pov_daa = opt_num(item, "daaScore")?.unwrap_or(file_daa);
+    let mut pov_daa = opt_num(item, "daaScore")?.unwrap_or(file_daa);
+    // A DAA lock time (below 500,000,000,000) needs a block above it: when the
+    // context is not, the transaction can only be judged in a later block.
+    let mut raised_daa = None;
+    if lock_time > 0 && lock_time < 500_000_000_000 && pov_daa <= lock_time {
+        raised_daa = Some((pov_daa, lock_time + 1));
+        pov_daa = lock_time + 1;
+    }
     let block_time = opt_num(item, "pastMedianTime")?.unwrap_or(file_time);
     let as_given = SpendPlan {
         version,
@@ -379,6 +480,7 @@ fn parse_one(
         genesis: vec![],
     };
     let resigns = find_resigns(&specs, &as_given, keys, contract, judge, pins)?;
+    let exact = as_given.clone();
     for (s, r) in specs.iter_mut().zip(resigns) {
         if r.is_some() {
             s.signed = false;
@@ -423,7 +525,7 @@ fn parse_one(
         Ok(SpendPlan {
             version,
             inputs: verbatim_inputs,
-            outputs: parse_outputs(outputs, &key_spks, &own)?,
+            outputs: parse_outputs_kept(outputs, &[], &own, &key_spks)?,
             lock_time,
             payload: payload.clone(),
             pov_daa,
@@ -435,8 +537,8 @@ fn parse_one(
         Some(v) => Some(v?),
         None => None,
     };
-    Ok((
-        SpendPlan {
+    Ok(Parsed {
+        plan: SpendPlan {
             version,
             inputs: plan_inputs,
             outputs: plan_outputs,
@@ -447,11 +549,25 @@ fn parse_one(
             genesis: vec![],
         },
         verbatim,
-    ))
+        as_given: exact,
+        raised_daa,
+    })
 }
 
 /// Outputs; those paying a `replaced` funding script go to the attacker, who now owns it.
 fn parse_outputs(outputs: &[Value], replaced: &[ScriptPublicKey], own: &[usize]) -> Result<Vec<OutputSpec>> {
+    parse_outputs_kept(outputs, replaced, own, &[])
+}
+
+/// `parse_outputs`; those paying a `kept_own` script stay byte for byte as given
+/// and are marked the signer's own (a listed key's address, when the coins are
+/// kept as given: rewriting them would change what was signed).
+fn parse_outputs_kept(
+    outputs: &[Value],
+    replaced: &[ScriptPublicKey],
+    own: &[usize],
+    kept_own: &[ScriptPublicKey],
+) -> Result<Vec<OutputSpec>> {
     let mut plan_outputs = Vec::with_capacity(outputs.len());
     for (i, o) in outputs.iter().enumerate() {
         let w = format!("outputs[{i}]");
@@ -465,8 +581,9 @@ fn parse_outputs(outputs: &[Value], replaced: &[ScriptPublicKey], own: &[usize])
                 hash(c.get("covenantId").ok_or_else(|| anyhow!("{w}.covenant: missing covenantId"))?, &w)?,
             )),
         };
+        let mine = own.contains(&i) || kept_own.contains(&s);
         let to = if replaced.contains(&s) { Dest::Key(KeyRef::Attacker) } else { Dest::Raw(s) };
-        plan_outputs.push(OutputSpec { value, own: own.contains(&i), to, covenant });
+        plan_outputs.push(OutputSpec { value, own: mine, to, covenant });
     }
     Ok(plan_outputs)
 }

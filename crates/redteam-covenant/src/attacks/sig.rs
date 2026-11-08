@@ -54,6 +54,7 @@ impl CovenantAttack for Sig01 {
                 explanation: "consensus accepted an invalid signature on a signed path and let the attacker take the whole coin. The signature check runs but its result is not required.".into(),
                 severity: None,
                 takeover: true,
+                benign: None,
             });
             out.push(Attempt {
                 path: p.entry.clone(),
@@ -62,6 +63,7 @@ impl CovenantAttack for Sig01 {
                 explanation: "anyone can trigger this path without the signer's signature. Outputs are still fixed by the covenant, so nothing is stolen, but the signer loses control of when it happens.".into(),
                 severity: Some(Severity::Low),
                 takeover: false,
+                benign: None,
             });
         }
         Ok(out)
@@ -108,6 +110,7 @@ impl CovenantAttack for Sig02 {
                 explanation: "a signature from a key the covenant never named was accepted, and the attacker took the whole coin.".into(),
                 severity: None,
                 takeover: true,
+                benign: None,
             });
             // b) attacker signature AND attacker pubkey in every pubkey argument
             let c = cx.contract;
@@ -124,6 +127,7 @@ impl CovenantAttack for Sig02 {
                 explanation: "the path checks the signature against a pubkey the spender supplies, so anyone can pass their own key and signature and take the coin.".into(),
                 severity: None,
                 takeover: true,
+                benign: None,
             });
         }
         Ok(out)

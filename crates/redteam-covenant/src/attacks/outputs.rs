@@ -44,6 +44,7 @@ impl CovenantAttack for Out01 {
                 explanation: "this path needs no signature and does not pin where the money goes: anyone can spend the whole coin to themselves.".into(),
                 severity: None,
                 takeover: true,
+                benign: None,
             });
             for j in 0..b.plan.outputs.len() {
                 if b.plan.outputs[j].is_attackers() {
@@ -62,6 +63,7 @@ impl CovenantAttack for Out01 {
                     ),
                     severity: None,
                     takeover: b.plan.outputs.len() == 1,
+                    benign: None,
                 });
             }
         }
@@ -116,6 +118,7 @@ impl CovenantAttack for Out02 {
                 ),
                 severity: None,
                 takeover: false,
+                benign: None,
             });
         }
         Ok(out)
@@ -154,6 +157,11 @@ impl CovenantAttack for Out03 {
                 if b.plan.outputs[j].is_attackers() {
                     continue;
                 }
+                // A new covenant coin the spender pays for: shortening it
+                // shortchanges only the spender.
+                let benign = super::spender_funded(&b.plan, j, &cx.contract.wallets.attacker.keypair).then(|| {
+                    format!("output {j} is a new coin the spender pays for, not the covenant's value; shortening it shortchanges only the spender")
+                });
                 let mut plan = b.plan.clone();
                 let honest = plan.outputs[j].value;
                 let half = honest / 2;
@@ -171,6 +179,7 @@ impl CovenantAttack for Out03 {
                     ),
                     severity: None,
                     takeover: false,
+                    benign,
                 });
             }
         }
@@ -246,6 +255,7 @@ impl CovenantAttack for Out04 {
                 ),
                 severity: None,
                 takeover: false,
+                benign: None,
             });
         }
         if out.is_empty() {

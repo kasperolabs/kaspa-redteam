@@ -43,6 +43,7 @@ impl CovenantAttack for Fee01 {
                     ),
                     severity: None,
                     takeover: false,
+                    benign: None,
                 }
             })
             .collect())

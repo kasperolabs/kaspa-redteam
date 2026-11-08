@@ -44,6 +44,7 @@ impl CovenantAttack for Orc04 {
                 explanation: "a reading signed by a key the covenant never named was accepted, and the attacker took the whole coin.".into(),
                 severity: None,
                 takeover: true,
+                benign: None,
             });
             let swapped = map_covenant_args(&forged, |a| match a {
                 ArgRecipe::Value(ArtifactValue::Bytes(bytes)) if bytes.len() == 32 && c.key_of(bytes).is_some() => {
@@ -58,6 +59,7 @@ impl CovenantAttack for Orc04 {
                 explanation: "the path verifies the reading against a key the spender passes in, so anyone can sign their own reading and take the coin.".into(),
                 severity: None,
                 takeover: true,
+                benign: None,
             });
             out.push(Attempt {
                 path: p.entry.clone(),
@@ -66,6 +68,7 @@ impl CovenantAttack for Orc04 {
                 explanation: "anyone can trigger this path with a reading they signed themselves. The outputs are still pinned, so nothing is stolen, but the conductor or oracle no longer decides when it happens.".into(),
                 severity: Some(Severity::Low),
                 takeover: false,
+                benign: None,
             });
             out.push(Attempt {
                 path: p.entry.clone(),
@@ -74,6 +77,7 @@ impl CovenantAttack for Orc04 {
                 explanation: "anyone can trigger this path with a reading they signed themselves. The outputs are still pinned, so nothing is stolen, but the conductor or oracle no longer decides when it happens.".into(),
                 severity: Some(Severity::Low),
                 takeover: false,
+                benign: None,
             });
         }
         Ok(out)

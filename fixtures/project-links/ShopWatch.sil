@@ -1,0 +1,28 @@
+// Watches the shop's orders. It names their programs by abbreviation
+// (BUY_TPL is ShopBuy's template, BUY_PRE / BUY_SUF its prefix and suffix
+// lengths) and the token's by `tokenTplHash`.
+pragma silverscript ^0.1.0;
+
+contract ShopWatch(
+    byte[32] BUY_TPL,
+    int BUY_PRE,
+    int BUY_SUF,
+    byte[32] SELL_TPL,
+    int SELL_PRE,
+    int SELL_SUF,
+    pubkey init_owner,
+    byte[32] init_tokenTplHash,
+    byte[32] init_tokenCovId
+) {
+    pubkey owner = init_owner;
+    byte[32] tokenTplHash = init_tokenTplHash;
+    byte[32] tokenCovId = init_tokenCovId;
+
+    entry touch(sig s) {
+        require(checkSig(s, owner));
+        require(BUY_TPL != SELL_TPL);
+        require(BUY_PRE + BUY_SUF + SELL_PRE + SELL_SUF > 0);
+        require(tokenTplHash != BUY_TPL);
+        require(OpInputCovenantId(1) == tokenCovId);
+    }
+}

@@ -195,6 +195,35 @@ pub fn detect(files: &[ProjectFile], overrides: &BTreeMap<String, String>) -> Re
                 }
             }
         }
+        // Templates by an abbreviated name: `ASK_TPL` is the template of the
+        // project's `...Ask` program, `COND_BID_TPL` of `...CondBid`; `ASK_PRE` /
+        // `ASK_SUF` are that program's prefix and suffix lengths. The closest
+        // name wins (fewest other words), and only when exactly one file is closest.
+        let open: Vec<&crate::contract::CtorArg> =
+            a.contract.args.iter().filter(|x| x.origin != "override" && !per_file[ai].values.contains_key(&x.name)).collect();
+        for arg in open {
+            let Some((stem, part)) = abbreviated(&arg.name) else { continue };
+            if !matches!((part, arg.ty.as_str()), (Part::Template, "byte[32]") | (Part::Prefix | Part::Suffix, "int")) {
+                continue;
+            }
+            if part != Part::Template && per_file[ai].ints.contains_key(&arg.name) {
+                continue;
+            }
+            let Some(bi) = closest_by_words(&compiled, ai, &stem) else { continue };
+            let b = &compiled[bi];
+            match part {
+                Part::Template => {
+                    per_file[ai].values.insert(arg.name.clone(), (b.contract.contract_name.clone(), b.template.clone()));
+                    links.push(Link { from: a.file.clone(), via: arg.name.clone(), to: b.file.clone(), kind: "template" });
+                }
+                Part::Prefix | Part::Suffix => {
+                    if let Some((pre, suf)) = crate::family::template_parts(&b.contract) {
+                        let v = if part == Part::Prefix { pre.len() } else { suf.len() };
+                        per_file[ai].ints.insert(arg.name.clone(), (b.contract.contract_name.clone(), v as i64));
+                    }
+                }
+            }
+        }
         // Templates of a token program, by name: when the project has exactly
         // one token program (a leader transfer entry and a follower), a
         // `byte[32]` value named for a template (`tokenTplHash`) is its template
@@ -224,7 +253,12 @@ pub fn detect(files: &[ProjectFile], overrides: &BTreeMap<String, String>) -> Re
         // coin's covenant id (`OpInputCovenantId(i) == tokenCovId`) names the
         // family of the program its template links to. In the sandbox that
         // family has a fixed id, so the coins the tool builds carry it.
-        let targets: std::collections::BTreeSet<String> = per_file[ai].values.values().map(|(p, _)| p.clone()).collect();
+        let mut targets: std::collections::BTreeSet<String> = per_file[ai].values.values().map(|(p, _)| p.clone()).collect();
+        // Links to several programs (orders by abbreviated name, and a token):
+        // a covenant id compared to a coin's is the token's.
+        if targets.len() > 1 {
+            targets.retain(|p| compiled.iter().any(|c| &c.contract.contract_name == p && is_token_program(&c.contract)));
+        }
         if targets.len() == 1 {
             let prog = targets.iter().next().unwrap().clone();
             if let Some(b) = compiled.iter().find(|c| c.contract.contract_name == prog) {
@@ -286,6 +320,94 @@ pub fn detect(files: &[ProjectFile], overrides: &BTreeMap<String, String>) -> Re
         }
     }
     Ok((links, per_file))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Template,
+    Prefix,
+    Suffix,
+}
+
+/// Words of a name: `ShopCondBuy` -> shop, cond, buy; `COND_BID_TPL` -> cond, bid, tpl.
+fn words(name: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let chars: Vec<char> = name.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        if !c.is_ascii_alphanumeric() {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+            continue;
+        }
+        let prev = i.checked_sub(1).map(|j| chars[j]);
+        let next = chars.get(i + 1).copied();
+        let boundary = c.is_ascii_uppercase()
+            && prev.is_some_and(|p| p.is_ascii_lowercase() || (p.is_ascii_uppercase() && next.is_some_and(|n| n.is_ascii_lowercase())));
+        if boundary && !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+        cur.push(c.to_ascii_lowercase());
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// A parameter named for another program by an abbreviation: the words before
+/// its last word, and what the last word says (`ASK_TPL`, `ASK_PRE`, `BID_SUF`).
+/// Names that say token (`tokenTplHash`) belong to the token rule, and the
+/// `init_` / `gen_` of a state field are no part of the name.
+fn abbreviated(name: &str) -> Option<(Vec<String>, Part)> {
+    let mut w = words(name);
+    w.retain(|x| x != "init" && x != "gen");
+    let last = w.pop()?;
+    let part = match last.as_str() {
+        "tpl" | "template" => Part::Template,
+        "pre" | "prefix" => Part::Prefix,
+        "suf" | "suffix" => Part::Suffix,
+        _ => return None,
+    };
+    if w.is_empty() || w.iter().any(|x| x == "token" || x == "tok" || x == "own" || x == "self" || x == "my") {
+        return None;
+    }
+    Some((w, part))
+}
+
+/// The one other file whose contract name ends with `stem`'s words, with the
+/// fewest other words (`buy` -> ShopBuy, not ShopCondBuy); or, when none ends
+/// with them, the one file whose name holds them in a row (`cond` -> ShopCondBuy
+/// when it is the only conditional). None when two files are equally close.
+fn closest_by_words(compiled: &[Compiled], ai: usize, stem: &[String]) -> Option<usize> {
+    let mut ends: Vec<(usize, usize)> = Vec::new();
+    let mut holds: Vec<(usize, usize)> = Vec::new();
+    for (bi, b) in compiled.iter().enumerate() {
+        if bi == ai || b.template.is_empty() {
+            continue;
+        }
+        let w = words(&b.contract.contract_name);
+        if w.len() < stem.len() {
+            continue;
+        }
+        let extra = w.len() - stem.len();
+        if w[extra..] == *stem {
+            ends.push((bi, extra));
+        } else if w.windows(stem.len()).any(|win| win == stem) {
+            holds.push((bi, extra));
+        }
+    }
+    let pick = |mut v: Vec<(usize, usize)>| -> Option<usize> {
+        v.sort_by_key(|(_, e)| *e);
+        match v.as_slice() {
+            [] => None,
+            [one] => Some(one.0),
+            [a, b, ..] if a.1 < b.1 => Some(a.0),
+            _ => None,
+        }
+    };
+    if ends.is_empty() { pick(holds) } else { pick(ends) }
 }
 
 /// Searches and attacks every file of the project, with the links applied.

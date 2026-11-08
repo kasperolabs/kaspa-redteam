@@ -1,0 +1,11 @@
+// A vault whose owner signs inside a witness: one path byte, then the
+// signature, as a token cell's owner witness does. Used by the baseline tests
+// (a listed key's signature inside such a witness is found and signed again).
+pragma silverscript ^0.1.0;
+
+contract WitnessVault(pubkey owner) {
+    entry spend(byte[] witness) {
+        byte[] w = witness.slice(1, witness.length);
+        require(checkSig(sig(byte[65](w)), owner));
+    }
+}

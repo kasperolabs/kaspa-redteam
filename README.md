@@ -69,9 +69,12 @@ Exit codes: `0` clean, `1` findings, `2` error.
 
 ```
 { "cap": 500000000, "feeScript": "0x...", "tokenTemplate": "0x..." }     by name
-[ "0x...", 500000000, true ]                                             in constructor order (one contract)
+[ "0x...", 500000000, true ]                                             in constructor order
 { "constructorArgs": { ... } }  or  [ { "name": "cap", "value": 500000000 } ]
+[ { "kind": "bytes", "value": [3, 3, ...] }, { "kind": "int", "value": 1 } ]   silverc's own file
 ```
+
+silverc's constructor file works as it is: values in order, each with its `kind` (`int`, `bool`, `byte` as a number; `bytes` or `pubkey` as an array of byte numbers or a hex string). A value whose kind does not fit its parameter is refused with its position. Values in order belong to one contract; in a project (several files) they go to the one contract whose parameters they fit by count and kind, and the report says which. When more than one fits, give them by name.
 
 The tool can only spend what it holds the secrets for, so a few values are played by the tool, and the report lists which: `pubkey` parameters become test keys of the same name (`@owner`), and a `byte[32]` used as a key, a key hash or a hash lock gets a test key or the hash of a test secret. Everything else is used exactly as given.
 
@@ -100,6 +103,8 @@ The language still changes, and the tool compiles with the current SilverScript.
 - Aug 3, 2026 (SilverScript PR #193): struct literals and destructuring name their type. `State s = { a: x }` is now `State s = State { a: x }`, `validateOutputState(0, { .. })` is `validateOutputState(0, State { .. })`, and `{ a: int x } = readInputState(1);` is `State { a: int x } = readInputState(1);`.
 
 What is tested is today's compile. A contract already on chain keeps the bytecode an older compiler made, which may differ; to test exactly what is deployed, give its real transactions with `--baseline`.
+
+Argent files (`.ag`) are not SilverScript. A dropped `.ag` gets a plain message instead of a syntax error: compile it with argentc and test the `sil/*.sil` files it generates, together, in one run. An Argent file that only declares an interface for contracts written in SilverScript needs no testing of its own; test those `.sil` files.
 
 ### Real transactions from mainnet or testnet
 
@@ -150,6 +155,7 @@ The report starts with the links it found, so you can check it understood the pr
 With `--baseline` (or real transactions) next to several files, each file is attacked as above and the transactions get one more report, `real.json (real transactions)`. Every file with a state window becomes a known program for them (its template hash as compiled with the values given), and the file whose program is a covenant input under test labels that report. A deployed program matches only with the constructor values it was deployed with (`--args`).
 
 - **template by name**: a `byte[32]` parameter named after another file (`kcc20_template`, `gen__init_bridge_mint_template`) gets that program's real template hash.
+- **template by abbreviated name**: `ASK_TPL` is the template hash of the project's `...Ask` program, `COND_BID_TPL` of `...CondBid`, and `ASK_PRE` / `ASK_SUF` (or `_PREFIX` / `_SUFFIX`) are its prefix and suffix lengths. The words of the name before `TPL` must end the other contract's name; the closest one wins (`BUY_TPL` is `ShopBuy`, not `ShopCondBuy`), and only when exactly one file is closest. A name with `token` or `tok` in it (`tokenTplHash`) is left to the token rule: with one token program in the project, it is that program's template. Example: `fixtures/project-links/`.
 - **template by role**: the template argument of `readInputStateWithTemplate`, `validateOutputStateWithTemplate` or `validateOutputStateWithInputTemplate` is another program of the project whatever it is called (`expectedTemplateHash`); with one other program to choose from it is that one, and length arguments in the same call (`templatePrefixLen`) get that program's prefix and suffix lengths.
 
 **Families: several programs in one transaction.** When a path refers to another program's covenant id (`OpCovInputCount(prev_state.token)`), the tool also tries it together with a coin of that program, each coin with its own covenant id; outputs a coin authorizes belong to its family. The draft comes from the sources (which state fields hold covenant ids, which arguments are template parts, what a journal record looks like); then the scripts themselves finish it: when an input rejects the draft, the engine's execution log shows the comparison that failed and the value the script computed, often a whole output script, and the tool puts that in and runs again. That is how a bridge's mint is built: the bridge coin with a proof and one deposit, its mint authority, and the new token cell, with no bridge-specific code. A program that only took part says so in its own report.
