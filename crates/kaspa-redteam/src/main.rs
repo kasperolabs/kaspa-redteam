@@ -50,6 +50,9 @@ struct ScanArgs {
     /// Honest transactions to attack, from your own harness (format: BASELINE.md). Repeatable.
     #[arg(long = "baseline", value_name = "FILE")]
     baselines: Vec<PathBuf>,
+    /// With .sil files and --baseline: use the files only to read the real transactions (which program each coin runs, its state by field name); do not search or attack the files themselves
+    #[arg(long)]
+    baseline_only: bool,
     /// Keep the default constructor values even when they leave paths unexplored
     #[arg(long)]
     no_tune: bool,
@@ -243,6 +246,29 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
     if a.compiled.is_some() && a.files.len() != 1 {
         bail!("--compiled needs exactly one .sil file next to it (the source of that script)");
     }
+    if a.baseline_only {
+        if a.baselines.is_empty() || a.files.is_empty() {
+            bail!("--baseline-only needs .sil files and at least one --baseline file");
+        }
+        let started = std::time::Instant::now();
+        let mut files = Vec::new();
+        let mut notes = file_notes;
+        for f in &a.files {
+            let source = std::fs::read_to_string(f).with_context(|| format!("read {}", f.display()))?;
+            let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| f.display().to_string());
+            let (source, n) = redteam_covenant::legacy::prepare(&name, &source)?;
+            notes.extend(n);
+            files.push(redteam_covenant::project::ProjectFile { name, source });
+        }
+        let judge = redteam_covenant::sandbox::Judge::new();
+        let (mut report, _) = project_baselines(a, &files, &overrides, &judge, started)?;
+        notes.push(format!(
+            "--baseline-only: {} file(s) used to read the real transactions; the files themselves were not searched or attacked",
+            files.len()
+        ));
+        report.notes.splice(0..0, notes);
+        return finish(report, &a.common);
+    }
     if a.files.len() > 1 {
         return project(a, &overrides, file_notes);
     }
@@ -341,8 +367,12 @@ fn project_baselines(
     let mut partners = Vec::new();
     let mut contracts = Vec::new();
     let mut notes = Vec::new();
-    for f in files {
-        match redteam_covenant::contract::Contract::load(&f.name, &f.source, overrides) {
+    // The project's links (a template named `ASK_TPL` is the ...Ask program's),
+    // so a program that pins another one compiles to the bytes on chain.
+    let links = redteam_covenant::project::detect(files, overrides).map(|(_, l)| l).unwrap_or_default();
+    for (i, f) in files.iter().enumerate() {
+        let l = links.get(i).cloned().unwrap_or_default();
+        match redteam_covenant::contract::Contract::load_linked(&f.name, &f.source, overrides, &l) {
             Ok(c) => {
                 if let Some(p) = redteam_covenant::known::from_contract(&c) {
                     partners.push(p);

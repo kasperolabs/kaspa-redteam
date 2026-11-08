@@ -1,0 +1,14 @@
+// As tip_refund.sil, but the refund does not bound what the owner gets: the
+// leftover can be far more than `keeperTip`, and that stays a finding.
+pragma silverscript ^0.1.0;
+
+contract TipRefundLoose(pubkey init_owner, int init_keeperTip) {
+    pubkey owner = init_owner;
+    int keeperTip = init_keeperTip;
+
+    entry refund() {
+        require(tx.inputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(owner)));
+        require(keeperTip >= 0);
+    }
+}

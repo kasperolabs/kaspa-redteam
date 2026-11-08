@@ -44,7 +44,8 @@ impl CovenantAttack for Out01 {
                 explanation: "this path needs no signature and does not pin where the money goes: anyone can spend the whole coin to themselves.".into(),
                 severity: None,
                 takeover: true,
-                benign: None,
+                benign: super::all_signers_own(&b.plan)
+                    .then(|| "paid from the signer's own coins: every coin this spend uses is the signer's".to_string()),
             });
             for j in 0..b.plan.outputs.len() {
                 if b.plan.outputs[j].is_attackers() {
@@ -63,7 +64,7 @@ impl CovenantAttack for Out01 {
                     ),
                     severity: None,
                     takeover: b.plan.outputs.len() == 1,
-                    benign: None,
+                    benign: super::signers_own_payment(&b.plan, j),
                 });
             }
         }
@@ -118,7 +119,7 @@ impl CovenantAttack for Out02 {
                 ),
                 severity: None,
                 takeover: false,
-                benign: None,
+                benign: super::signers_own_payment(&b.plan, 0),
             });
         }
         Ok(out)
@@ -159,9 +160,11 @@ impl CovenantAttack for Out03 {
                 }
                 // A new covenant coin the spender pays for: shortening it
                 // shortchanges only the spender.
-                let benign = super::spender_funded(&b.plan, j, &cx.contract.wallets.attacker.keypair).then(|| {
-                    format!("output {j} is a new coin the spender pays for, not the covenant's value; shortening it shortchanges only the spender")
-                });
+                let benign = super::spender_funded(&b.plan, j, &cx.contract.wallets.attacker.keypair)
+                    .then(|| {
+                        format!("output {j} is a new coin the spender pays for, not the covenant's value; shortening it shortchanges only the spender")
+                    })
+                    .or_else(|| super::signers_own_payment(&b.plan, j));
                 let mut plan = b.plan.clone();
                 let honest = plan.outputs[j].value;
                 let half = honest / 2;
@@ -231,9 +234,27 @@ impl CovenantAttack for Out04 {
             // A real transaction's leftover is the fee its spender paid. When
             // the spender's own coins could have paid all of it, taking it back
             // takes nothing from the covenant.
-            if p.imported && left <= b.plan.attacker_input_total(&cx.contract.wallets.attacker.keypair) {
+            // A leftover the covenant itself names (a refund tip, a keeper's tip,
+            // a budget its spender may keep) is the design, not value nobody
+            // claimed: still tried, and a note if it goes through.
+            let designed = if p.imported { super::designed_leftover(&b.plan, left) } else { None };
+            if p.imported && designed.is_none() && left <= super::signer_input_total(&b.plan).max(b.plan.attacker_input_total(&cx.contract.wallets.attacker.keypair)) {
                 continue;
             }
+            // The spend already pays the signer, and the leftover is no more than
+            // that share: it is the fee the signer leaves out of its own share.
+            let share: u64 = b.plan.outputs.iter().filter(|o| o.is_attackers()).map(|o| o.value).sum();
+            let benign = designed
+                .map(|(name, v, what)| format!("the leftover ({}) is within `{name}` ({}), {what}", kas(left), kas(v)))
+                .or_else(|| {
+                    (p.imported && share > 0 && left <= share).then(|| {
+                        format!(
+                            "the leftover ({}) is no more than what the spend already pays the signer ({}): the fee comes out of the signer's own share",
+                            kas(left),
+                            kas(share)
+                        )
+                    })
+                });
             let take = left - NORMAL_FEE;
             let mut plan = b.plan.clone();
             plan.outputs = kept;
@@ -255,7 +276,7 @@ impl CovenantAttack for Out04 {
                 ),
                 severity: None,
                 takeover: false,
-                benign: None,
+                benign,
             });
         }
         if out.is_empty() {

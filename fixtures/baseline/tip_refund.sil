@@ -1,0 +1,15 @@
+// A deposit anyone may refund to its owner once it expires, keeping up to
+// `keeperTip` for doing it (a tip the covenant pays whoever spends it). Used by
+// the baseline tests: a leftover within `keeperTip` is a note, not a finding.
+pragma silverscript ^0.1.0;
+
+contract TipRefund(pubkey init_owner, int init_keeperTip) {
+    pubkey owner = init_owner;
+    int keeperTip = init_keeperTip;
+
+    entry refund() {
+        require(tx.inputs.length == 1);
+        require(tx.outputs[0].scriptPubKey == byte[](new ScriptPubKeyP2PK(owner)));
+        require(tx.outputs[0].value + keeperTip >= tx.inputs[this.activeInputIndex].value);
+    }
+}

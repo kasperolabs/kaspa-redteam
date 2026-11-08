@@ -43,7 +43,11 @@ impl CovenantAttack for Fee01 {
                     ),
                     severity: None,
                     takeover: false,
-                    benign: None,
+                    benign: {
+                        let all: Vec<usize> = (0..b.plan.outputs.len()).filter(|j| !b.plan.outputs[*j].is_attackers()).collect();
+                        (!all.is_empty() && all.iter().all(|j| super::signers_own_payment(&b.plan, *j).is_some()))
+                            .then(|| "paid from the signer's own coins: every output halved is a payment the signer makes".to_string())
+                    },
                 }
             })
             .collect())

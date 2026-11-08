@@ -368,6 +368,49 @@ fn decode_call(pin: &Pin, sig_script: &[u8], args: &[(usize, Vec<u8>)], redeem: 
     (again == sig_script).then(|| Call { entry: entry.clone(), args: values, arg_at })
 }
 
+/// The new token states of a KCC-20 `transfer`, read from any input's
+/// signature script: by its program when it is one of `pins`, otherwise by the
+/// shipped KCC-20 interface alone (a build of the same source with other
+/// limits or templates spends through the same `transfer(next_states, witness)`).
+/// Kept only when the arguments encode back to exactly the same bytes.
+/// Item k is the state of the k-th output this input authorizes.
+pub fn transfer_next_states(sig_script: &[u8], pins: &[Pin]) -> Option<Vec<StateValues>> {
+    let from_call = |call: &Call| -> Option<Vec<StateValues>> {
+        if call.entry != "transfer" {
+            return None;
+        }
+        match call.args.first()? {
+            ArtifactValue::Array(items) => items
+                .iter()
+                .map(|v| match v {
+                    ArtifactValue::Object(o) => Some(o.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => None,
+        }
+    };
+    if let Some(rec) = recognize(sig_script, pins) {
+        return rec.call.as_ref().and_then(from_call);
+    }
+    let ps = pushes(sig_script)?;
+    let (_, redeem) = ps.last()?;
+    builtin().iter().filter(|p| p.kcc20 && p.name == "KCC20").find_map(|pin| {
+        let call = decode_call(pin, sig_script, &ps[..ps.len() - 1], redeem)?;
+        from_call(&call)
+    })
+}
+
+/// Integer fields of a recognized program's state, by name.
+pub fn state_ints(st: &StateValues) -> Vec<(String, i64)> {
+    st.iter()
+        .filter_map(|(k, v)| match v {
+            ArtifactValue::Int(n) => Some((k.clone(), *n)),
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn byte_of(st: &StateValues, field: &str) -> Option<u8> {
     match st.get(field)? {
         ArtifactValue::Byte(b) => Some(*b),

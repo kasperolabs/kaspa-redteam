@@ -48,6 +48,7 @@ fn raw(script: Vec<u8>, entry: UtxoEntry, budget: u16, target: bool) -> InputSpe
         target,
         signed: false,
         resign: None,
+        named: Vec::new(),
     })
 }
 
@@ -158,6 +159,7 @@ fn token_owner_signature_inside_the_witness_is_seen() {
                 target: true,
                 signed: false,
                 resign: Some(Resign { keypair: owner, at }),
+                named: Vec::new(),
             }),
             InputSpec::P2pk { owner: KeyRef::Attacker, value: 2 * KAS },
         ],

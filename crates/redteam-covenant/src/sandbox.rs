@@ -136,6 +136,11 @@ pub struct RawInput {
     /// key made: the tool signs it again after every change.
     #[serde(skip)]
     pub resign: Option<Resign>,
+    /// Numbers in the state of the program this coin runs, by field name, when
+    /// the program is known (a project file, a shipped program): what the
+    /// report can name a leftover after (`refundTip`, `max_extra`).
+    #[serde(skip)]
+    pub named: Vec<(String, i64)>,
 }
 
 /// Where a re-signable signature sits, and the key that makes it.

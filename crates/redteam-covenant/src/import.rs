@@ -166,6 +166,7 @@ fn load_inner(
     let mut out = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     let mut raised: Vec<String> = Vec::new();
+    let mut own_cells_noted: Vec<String> = Vec::new();
     for (n, item) in txs.iter().enumerate() {
         let label = item.get("path").and_then(|p| p.as_str()).map(String::from).unwrap_or_else(|| format!("tx{n}"));
         // One bad transaction does not stop the file: it is skipped with the
@@ -185,6 +186,12 @@ fn load_inner(
         if let (Verdict::Rejected(why), _) = judge.run(contract, &parsed.as_given) {
             skipped.push(format!("`{label}` (rejected by consensus as given: {why})"));
             continue;
+        }
+        if !parsed.own_cells.is_empty() {
+            own_cells_noted.push(format!(
+                "`{label}`: {}",
+                parsed.own_cells.iter().map(|(j, k)| format!("output {j} (key {k}...)")).collect::<Vec<_>>().join(", ")
+            ));
         }
         let Parsed { mut plan, verbatim, as_given, .. } = parsed;
         if let (Verdict::Rejected(why), _) = judge.run(contract, &plan) {
@@ -251,6 +258,13 @@ fn load_inner(
             tries: 0,
             imported: true,
         });
+    }
+    if !own_cells_noted.is_empty() {
+        notes.push(format!(
+            "{}: new token cells owned by a listed key (read from the KCC-20 transfer that makes them) count as the signer's own, so shortening them is not a finding: {}",
+            path.display(),
+            short_list(&own_cells_noted)
+        ));
     }
     if !raised.is_empty() {
         notes.push(format!(
@@ -362,6 +376,8 @@ struct Parsed {
     as_given: SpendPlan,
     /// The context DAA was raised to the transaction's DAA lock time + 1.
     raised_daa: Option<(u64, u64)>,
+    /// Outputs found to be new token cells of a listed key (index, key prefix).
+    own_cells: Vec<(usize, String)>,
 }
 
 /// The plan to attack and, when plain coins were swapped for the attacker's
@@ -444,16 +460,32 @@ fn parse_one(
             entry,
             target,
             resign: None,
+            named: Vec::new(),
         });
+    }
+    // Numbers a known program's state names, for the report (a leftover that
+    // equals `refundTip` is a tip the covenant pays, not value nobody claimed).
+    for s in specs.iter_mut() {
+        if let Some(rec) = crate::known::recognize(&s.signature_script, pins) {
+            s.named = crate::known::state_ints(&rec.state);
+        }
     }
     if !specs.iter().any(|s| s.target) {
         bail!("no input is a covenant under test; set `targets` to the covenant input indexes");
     }
-    let own: Vec<usize> = item
+    let mut own: Vec<usize> = item
         .get("own")
         .and_then(|t| t.as_array())
         .map(|a| a.iter().filter_map(|x| x.as_u64().map(|v| v as usize)).collect())
         .unwrap_or_default();
+    // New token cells a listed key owns (the taker's bought tokens): read from
+    // the KCC-20 transfer that makes them, so they count as the signer's own.
+    let own_cells = token_cells_of(&specs, outputs, keys, pins);
+    for (j, _) in &own_cells {
+        if !own.contains(j) {
+            own.push(*j);
+        }
+    }
     let raw_outputs = parse_outputs(outputs, &[], &own)?;
     let lock_time = opt_num(tx, "lockTime")?.unwrap_or(0);
     let payload = match tx.get("payload") {
@@ -551,7 +583,53 @@ fn parse_one(
         verbatim,
         as_given: exact,
         raised_daa,
+        own_cells,
     })
+}
+
+/// Outputs that are new KCC-20 cells owned by a listed key, with the key's
+/// short form: the k-th output an input authorizes gets the k-th state of
+/// that input's `transfer(next_states, witness)`. Owner schemes 0 (the key
+/// itself) and 1 (BLAKE3 of the key) are read.
+fn token_cells_of(
+    specs: &[RawInput],
+    outputs: &[Value],
+    keys: &[secp256k1::Keypair],
+    pins: &[crate::known::Pin],
+) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    if keys.is_empty() {
+        return out;
+    }
+    let ids: Vec<([u8; 32], [u8; 32])> = keys
+        .iter()
+        .map(|k| {
+            let x = k.x_only_public_key().0.serialize();
+            (x, *blake3::hash(&x).as_bytes())
+        })
+        .collect();
+    for (i, s) in specs.iter().enumerate() {
+        let Some(states) = crate::known::transfer_next_states(&s.signature_script, pins) else { continue };
+        let authorized: Vec<usize> = outputs
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| {
+                o.get("covenant").and_then(|c| c.get("authorizingInput")).and_then(|a| num(a, "authorizingInput").ok())
+                    == Some(i as u64)
+            })
+            .map(|(j, _)| j)
+            .collect();
+        for (k, st) in states.iter().enumerate() {
+            let Some(&j) = authorized.get(k) else { break };
+            let scheme = crate::known::byte_of(st, "owner_scheme");
+            let Some(owner) = crate::known::bytes_of(st, "owner") else { continue };
+            let hit = ids.iter().find(|(x, h)| (scheme == Some(0) && owner == x) || (scheme == Some(1) && owner == h));
+            if let Some((x, _)) = hit {
+                out.push((j, faster_hex::hex_string(&x[..4])));
+            }
+        }
+    }
+    out
 }
 
 /// Outputs; those paying a `replaced` funding script go to the attacker, who now owns it.

@@ -935,6 +935,7 @@ fn add_or_drop_coins(d: &mut Draft, f: &FailedCheck, sib: &Program, key: &secp25
                 target: false,
                 signed: false,
                 resign: None,
+                named: Vec::new(),
             }),
         );
         // Its KAS goes back to its owner, who signs this spend (the tool signs
@@ -1288,6 +1289,7 @@ fn explore_seeded(
                         target: false,
                         signed: false,
                         resign: None,
+                        named: Vec::new(),
                     }),
                     InputSpec::P2pk { owner: KeyRef::Attacker, value: 2 * cell_value },
                 ],
@@ -1729,6 +1731,7 @@ fn stray_coin(main: &Contract, d: &Draft, sib: &Program, programs: &[Program]) -
             target: false,
             signed: false,
             resign: None,
+            named: Vec::new(),
         }),
     );
     // The swept tokens, in a coin the attacker owns.
@@ -2125,6 +2128,7 @@ pub fn explore_owned(main: &Contract, entry: &str, programs: &[Program], judge: 
                         target: false,
                         signed: false,
                         resign: None,
+                        named: Vec::new(),
                     }),
                     InputSpec::P2pk { owner: KeyRef::Attacker, value: sib_value * cells.len() as u64 },
                 ],
@@ -2486,6 +2490,7 @@ fn stranger_borrow(main: &Contract, d: &Draft, sib: &Program) -> Option<SpendPla
                 target: false,
                 signed: false,
                 resign: None,
+                named: Vec::new(),
             }),
             InputSpec::Raw(RawInput {
                 outpoint: None,
@@ -2497,6 +2502,7 @@ fn stranger_borrow(main: &Contract, d: &Draft, sib: &Program) -> Option<SpendPla
                 target: false,
                 signed: false,
                 resign: Some(crate::sandbox::Resign { keypair: main.wallets.attacker.keypair, at }),
+                named: Vec::new(),
             }),
             InputSpec::P2pk { owner: KeyRef::Attacker, value: value },
         ],
@@ -2740,6 +2746,7 @@ impl<'a> BorrowTx<'a> {
                     target: true,
                     signed: false,
                     resign: lead_sig.map(|at| crate::sandbox::Resign { keypair: lead_key, at }),
+                    named: Vec::new(),
                 }),
                 InputSpec::Raw(RawInput {
                     outpoint: None,
@@ -2751,6 +2758,7 @@ impl<'a> BorrowTx<'a> {
                     target: false,
                     signed: false,
                     resign: Some(crate::sandbox::Resign { keypair: self.borrower, at }),
+                    named: Vec::new(),
                 }),
                 InputSpec::P2pk { owner: KeyRef::Attacker, value },
             ],

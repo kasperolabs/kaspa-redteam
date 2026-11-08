@@ -272,6 +272,7 @@ pub fn variants(
                         target: false,
                         signed: false,
                         resign: None,
+                        named: Vec::new(),
                     }));
                     let mut mine = nexts[0].clone();
                     mine.insert("amount".into(), ArtifactValue::Int(STRAY_UNITS));

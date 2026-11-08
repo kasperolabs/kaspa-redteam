@@ -34,7 +34,7 @@ Nothing is sent anywhere. The file is read, every transaction is first checked b
 | --- | --- |
 | `daaScore`, `pastMedianTime` | The block the transaction would land in (DAA score, past median time in ms). Optional; also settable per transaction. Needed when the covenant has time or DAA locks. |
 | `keys` | Optional. Throwaway private keys (64 hex) the harness signed with. Any transaction signature one of them made, in any input, is signed again after each change. See below. |
-| `own` | Optional, per transaction. Indexes of outputs that belong to the signing user (a buyer's new token coin, say). Attacks do not take from these: shortchanging yourself is not a finding. Outputs paying a listed key's plain address are recognised without it. |
+| `own` | Optional, per transaction. Indexes of outputs that belong to the signing user (a buyer's new token coin, say). Attacks do not take from these: shortchanging yourself is not a finding. Outputs paying a listed key's plain address are recognised without it, and so are new KCC-20 cells a listed key owns (owner scheme 0 or 1), read from the `transfer` that makes them, on any build of the KCC-20 program. |
 | `path` | A name for the report: usually the entry point. |
 | `targets` | Indexes of the inputs that are the covenant under test. Optional: by default every input that is not a plain pay-to-pubkey coin and not a known program (a KCC-20 reference cell, README: Known programs); if nothing else is left, the known program's inputs are the target. |
 | `tx` | The transaction, as rusty-kaspa's `Transaction` serializes to JSON (below). |
@@ -88,6 +88,16 @@ rusty-kaspa's JSON for `UtxoEntry`:
 - **Plain pay-to-pubkey inputs** (the coins that pay the fee or fund a purchase) are treated as the attacker's own: the tool swaps them for test coins of the same value and re-signs them, so outputs can change. Change outputs that went back to those coins go to the attacker.
 - **If a covenant input carries a transaction signature** (a 65-byte push ending in a sighash type byte, or the owner's signature inside a KCC-20 reference cell's `witness`) that no listed key made, the path is treated as signed: an outsider cannot change outputs without that key, so only the attacks that make sense for an outsider run, and funding coins are kept verbatim (re-signing them would break the covenant signature, which commits to every input).
 - **If a listed key made it** (`keys`), the signature is the attacker's own: the tool signs again after every change, and the path is attacked from that signer's seat. A listed key's signature is found as a 65-byte push, inside a token witness push (one path byte, then the signature: the KCC-20 owner witness, on any build of it), or where a recognized program's witness puts it. If signing again still breaks the transaction (a signature format the tool does not know), it is attacked as given, from the seat of someone who cannot sign, and the report says so. This is how a user-signed path (a seller signing for their own token coin) gets tested: can the signer take more than the covenant allows?
+
+### What the signer pays is the signer's
+
+When a listed key signs and pays into a transaction, some of its outputs are just the signer's own payments: a send between its own cells, a payment to a shop the covenant knows nothing about, the KAS carrier of a token cell it hands to someone. Changing those takes nothing from anyone else, so OUT-01, OUT-02, OUT-03 and FEE-01 report them as notes (`paid from the signer's own coins`), not findings, when:
+
+- every coin in the transaction is the signer's (its plain coins, and cells only a listed key signs for); or
+- the output is a plain payment to an address no other coin's program or state names, and the signer's coins paid in at least its value (a payment to the maker an order names stays protected, wherever the money came from); or
+- the output is a new coin of a covenant family (a token cell) whose other new coins already carry all the KAS the family's coins brought in.
+
+OUT-04 does the same for a leftover: within a number the covenant's state names as a tip, fee or budget (`refundTip`, `keeperTip`, `max_extra`, `maxFee`) it is a note that names the field; no more than what the transaction already pays the signer, it is the fee taken from the signer's own share. A leftover above them stays a finding. Field names need the program: give its `.sil` next to the baseline (`--baseline-only`, README: Projects).
 
 ### Which keys to list
 

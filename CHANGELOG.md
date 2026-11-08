@@ -1,5 +1,14 @@
 # Changelog
 
+## Tool 0.17.2 (library 0.10.2)
+
+Real transactions from a user's seat, from the same harness dump: what is left is what the covenants themselves decide.
+
+- Own token cells: a new KCC-20 cell a listed key owns (owner scheme 0 or 1) is the signer's own, read from the `transfer(next_states, witness)` that makes it, on any build of the KCC-20 program (the shipped interface decodes it when the template is not the reference). Before, only the `own` list and plain addresses counted.
+- The signer's own payments: on real transactions, OUT-01, OUT-02, OUT-03 and FEE-01 report an output paid from the signer's own coins as a note, not a finding. That is: every coin in the transaction is the signer's; or a plain payment to an address no other coin's program or state names; or a new coin of a family whose other new coins already carry the family's KAS. A payment an order names (its maker) stays protected.
+- Designed leftovers: OUT-04 on real transactions compares the leftover with the numbers the covenant's state names as a tip, fee or budget (`refundTip`, `keeperTip`, `max_extra`, `maxFee`); within one, it is a note naming the field. A leftover no more than what the transaction already pays the signer is the fee out of the signer's own share, also a note. Above them it stays a finding. The fee the signer's listed-key coins paid no longer counts as left over either.
+- `--baseline-only`: with `.sil` files and `--baseline`, the files only name the programs and state fields in the real transactions; they are not searched or attacked themselves. The project's links apply when the files are compiled for this (with or without `--baseline-only`), so a program that pins another by abbreviated name (`ASK_TPL`) is recognized in real transactions with no `--args`.
+
 ## Tool 0.17.1 (library 0.10.1)
 
 From a production run on an order-book project (nine order contracts, a router generated from Argent, two KCC-20 builds) and its builder's harness dump of 1,913 transactions. Every change is tested on neutral fixtures; nothing from that project is in this repository.
