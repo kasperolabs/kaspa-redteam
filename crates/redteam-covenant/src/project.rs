@@ -49,7 +49,7 @@ fn norm(s: &str) -> String {
 }
 
 /// Constructor overrides that belong to `source` (others are for other files).
-fn overrides_for(source: &str, all: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>> {
+pub fn overrides_for(source: &str, all: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>> {
     let ast = silverscript_lang::ast::parse_contract_ast(source).map_err(|e| anyhow::anyhow!("parse error: {e}"))?;
     Ok(all.iter().filter(|(k, _)| ast.params.iter().any(|p| &p.name == *k)).map(|(k, v)| (k.clone(), v.clone())).collect())
 }

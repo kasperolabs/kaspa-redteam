@@ -853,7 +853,93 @@ fn ranked_cartesian(per_param: &[Vec<(ArgRecipe, Option<String>)>], cap: usize) 
 }
 
 /// Successor states one or two field changes away from `from`, fewest changes first.
-fn successors(c: &Contract, from: &StateValues) -> Vec<StateValues> {
+/// Next states the entry names itself: each `State { field: expr, ... }`
+/// literal in its body (a `return(State { ... })` or a `validateOutputState`),
+/// with int and bool literals taken as written, `x.other` read from the current
+/// state, and any other expression (a journal slice, a sum) left as it is now.
+/// These come before the generic guesses: an entry that sets one field late in
+/// the state (`closed: 1`) is not crowded out by alternatives for the others.
+fn named_successors(c: &Contract, from: &StateValues, body: &str) -> Vec<StateValues> {
+    let is_ident = |ch: char| ch.is_ascii_alphanumeric() || ch == '_';
+    let split_top = |s: &str| {
+        let mut parts = vec![String::new()];
+        let mut depth = 0i32;
+        for ch in s.chars() {
+            match ch {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                ',' if depth == 0 => {
+                    parts.push(String::new());
+                    continue;
+                }
+                _ => {}
+            }
+            parts.last_mut().unwrap().push(ch);
+        }
+        parts
+    };
+    let mut out: Vec<StateValues> = Vec::new();
+    let mut from_at = 0;
+    while let Some(i) = body[from_at..].find("State {") {
+        let at = from_at + i;
+        from_at = at + 7;
+        // `State {` itself, not `BridgeMintState {`.
+        if body[..at].chars().next_back().is_some_and(is_ident) {
+            continue;
+        }
+        let after = &body[from_at..];
+        let mut depth = 1i32;
+        let Some(end) = after.char_indices().find_map(|(j, ch)| {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(j);
+                    }
+                }
+                _ => {}
+            }
+            None
+        }) else {
+            break;
+        };
+        let mut s = from.clone();
+        let mut changed = false;
+        for part in split_top(&after[..end]) {
+            let Some((k, v)) = part.split_once(':') else { continue };
+            let (k, v) = (k.trim(), v.trim());
+            let Some((_, ty)) = c.state_fields.iter().find(|(n, _)| n == k) else { continue };
+            let lit = match ty {
+                TypeArtifact::Int | TypeArtifact::Temporal => {
+                    v.replace('_', "").parse::<i64>().ok().map(ArtifactValue::Int)
+                }
+                TypeArtifact::Bool => match v {
+                    "true" => Some(ArtifactValue::Bool(true)),
+                    "false" => Some(ArtifactValue::Bool(false)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let val = lit.or_else(|| {
+                let (obj, field) = v.split_once('.')?;
+                (obj.chars().all(is_ident) && field.chars().all(is_ident)).then(|| from.get(field).cloned()).flatten()
+            });
+            if let Some(val) = val {
+                if s.get(k) != Some(&val) {
+                    s.insert(k.to_string(), val);
+                    changed = true;
+                }
+            }
+        }
+        if changed && !out.contains(&s) {
+            out.push(s);
+        }
+    }
+    out
+}
+
+fn successors(c: &Contract, from: &StateValues, body: &str) -> Vec<StateValues> {
     let mut alts: Vec<(String, Vec<ArtifactValue>)> = Vec::new();
     for (name, ty) in &c.state_fields {
         let cur = from.get(name).cloned();
@@ -894,6 +980,11 @@ fn successors(c: &Contract, from: &StateValues) -> Vec<StateValues> {
         alts.push((name.clone(), vals));
     }
     let mut out = vec![from.clone()];
+    for s in named_successors(c, from, body) {
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    }
     for (name, vals) in &alts {
         for v in vals {
             if out.len() >= MAX_SINGLE_SUCCESSORS {
@@ -1129,7 +1220,7 @@ fn generic_shapes(
     let mut payees: Vec<Dest> = order.into_iter().map(|i| Dest::Key(KeyRef::Party(i))).collect();
     payees.extend((0..c.stand_ins.len()).map(Dest::StandIn));
     let conts: Vec<Dest> = match (c.is_stateful(), state.or(c.initial_state.as_ref())) {
-        (true, Some(s)) => successors(c, s).into_iter().map(Dest::Successor).collect(),
+        (true, Some(s)) => successors(c, s, body).into_iter().map(Dest::Successor).collect(),
         _ => vec![Dest::SelfCovenant],
     };
     let mut everyone = payees.clone();

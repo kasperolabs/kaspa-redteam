@@ -243,6 +243,25 @@ fn scan(a: &ScanArgs) -> Result<ExitCode> {
         let (k, v) = kv.split_once('=').with_context(|| format!("--arg {kv}: expected NAME=VALUE"))?;
         overrides.insert(k.trim().to_string(), v.trim().to_string());
     }
+    // A hash lock given with --arg is used exactly as given (unlike --args, where
+    // the tool plays it), so the tool holds no secret for it. Say so, or the path
+    // that needs the secret looks unexplored for no reason.
+    for kv in &a.args {
+        let Some((k, v)) = kv.split_once('=') else { continue };
+        let (k, v) = (k.trim(), v.trim());
+        if v.starts_with('@') {
+            continue;
+        }
+        for f in &a.files {
+            let Ok(src) = std::fs::read_to_string(f) else { continue };
+            if redteam_covenant::contract::played_by_tool(&src, k) == Some("hash lock") {
+                file_notes.push(format!(
+                    "`{k}` from --arg is used exactly as given, so the tool has no secret behind it: a path that needs the secret stays unexplored. Leave it out, or give it in --args, to have the tool play it."
+                ));
+                break;
+            }
+        }
+    }
     if a.compiled.is_some() && a.files.len() != 1 {
         bail!("--compiled needs exactly one .sil file next to it (the source of that script)");
     }
@@ -372,7 +391,9 @@ fn project_baselines(
     let links = redteam_covenant::project::detect(files, overrides).map(|(_, l)| l).unwrap_or_default();
     for (i, f) in files.iter().enumerate() {
         let l = links.get(i).cloned().unwrap_or_default();
-        match redteam_covenant::contract::Contract::load_linked(&f.name, &f.source, overrides, &l) {
+        // Each file gets the values for its own parameters (a project's values file names them all).
+        let own = redteam_covenant::project::overrides_for(&f.source, overrides).unwrap_or_default();
+        match redteam_covenant::contract::Contract::load_linked(&f.name, &f.source, &own, &l) {
             Ok(c) => {
                 if let Some(p) = redteam_covenant::known::from_contract(&c) {
                     partners.push(p);

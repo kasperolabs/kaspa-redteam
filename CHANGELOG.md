@@ -1,5 +1,15 @@
 # Changelog
 
+## Tool 0.17.3 (library 0.10.2)
+
+From a run on a four-file stateful project: three paths stayed unexplored for reasons that had nothing to do with the contract. Each fix has a regression test on a neutral contract (`tests/search_reach.rs`) that fails on 0.17.2.
+
+- Hash-lock secrets take the length the source fixes: `require(preimage.length == 32)` or a `byte[32] secret` parameter gets a preimage of exactly that many bytes (derived from `redteam-secret:<name>`). Before, the secret was always that text, whose length depends on the parameter's name, so such a path was never spent and was reported unexplored. Without a fixed length the secret is the readable text, as before.
+- Next states the entry names itself come first: a `State { field: value, ... }` literal in the entry (its `return(State {...})` or a `validateOutputState`) is tried before the generic guesses, with int and bool literals as written and `prev_state.field` read from the current state. Before, an entry that sets one field late in a state with several others (`closed: 1` after a header, a committee and a counter) never got that successor: the guesses for the earlier fields filled the cap first, and how soon depended on unrelated constructor ints.
+- A hash lock is a value compared with a hash on its line (`sha256(x) == lockHash`, `byte[32](lockHash) == blake2b(x)`), not any value on a line with a hash call. An id that is only hashed into something else (`verify(sha256(journal), imageId)`) is the user's value and is no longer reported as played.
+- `--arg` with a hash lock: the value is used as given (unlike `--args`, where the tool plays it), and the report now says that a path needing its secret will stay unexplored, and how to have it played.
+- Real transactions in a project: each file is compiled with the values for its own parameters only. Before, a project's values file made every other file fail with "not used as a partner (the contract has no constructor parameter named ...)".
+
 ## Tool 0.17.2 (library 0.10.2)
 
 Real transactions from a user's seat, from the same harness dump: what is left is what the covenants themselves decide.

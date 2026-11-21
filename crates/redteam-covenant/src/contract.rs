@@ -428,6 +428,135 @@ fn sha256(b: &[u8]) -> Vec<u8> {
     Sha256::digest(b).to_vec()
 }
 
+fn is_ident_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// The text inside a call's parentheses: `s` starts right after the `(`.
+fn balanced(s: &str) -> Option<&str> {
+    let mut depth = 0i32;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '(' | '[' => depth += 1,
+            ')' | ']' if depth == 0 => return Some(&s[..i]),
+            ')' | ']' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Spans (start, end) of the arguments of every `sha256(...)` / `blake2b(...)` on a line.
+fn hash_call_spans(l: &str) -> Vec<(usize, usize, usize)> {
+    let mut out = Vec::new();
+    for call in ["sha256(", "blake2b("] {
+        let mut from = 0;
+        while let Some(i) = l[from..].find(call) {
+            let at = from + i;
+            from = at + call.len();
+            if l[..at].chars().next_back().is_some_and(is_ident_char) {
+                continue;
+            }
+            if let Some(inner) = balanced(&l[from..]) {
+                out.push((at, from, from + inner.len()));
+            }
+        }
+    }
+    out
+}
+
+/// A line that compares `name` with a hash: `sha256(x) == name`,
+/// `require(byte[32](lockHash) == blake2b(secret))`. `name` must sit outside
+/// the hash call (a value hashed into something else is not a lock).
+fn compares_to_hash(l: &str, name: &str) -> bool {
+    if !l.contains("==") {
+        return false;
+    }
+    let spans = hash_call_spans(l);
+    if spans.is_empty() {
+        return false;
+    }
+    l.match_indices(name).any(|(i, _)| {
+        l[..i].chars().next_back().is_none_or(|c| !is_ident_char(c))
+            && l[i + name.len()..].chars().next().is_none_or(|c| !is_ident_char(c))
+            && !spans.iter().any(|(_, a, b)| i >= *a && i < *b)
+    })
+}
+
+/// The identifier hashed in a lock check on `name`: `x` in `sha256(x) == name`,
+/// `name == blake2b(byte[](x))`.
+fn hashed_arg(source: &str, name: &str) -> Option<String> {
+    for l in source.lines().filter(|l| compares_to_hash(l, name)) {
+        for (_, a, b) in hash_call_spans(l) {
+            let inner = l[a..b].trim();
+            let inner = inner.strip_prefix("byte[](").and_then(|x| x.strip_suffix(')')).unwrap_or(inner).trim();
+            if !inner.is_empty() && inner.chars().all(is_ident_char) {
+                return Some(inner.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The length the source fixes for `arg`: `arg.length == 32`, or a `byte[32] arg`
+/// declaration (an entry parameter or a local).
+fn fixed_len(source: &str, arg: &str) -> Option<usize> {
+    let starts_with_ident =
+        |s: &str, id: &str| s.starts_with(id) && s[id.len()..].chars().next().is_none_or(|c| !is_ident_char(c));
+    let pat = format!("{arg}.length");
+    for l in source.lines() {
+        let mut from = 0;
+        while let Some(i) = l[from..].find(&pat) {
+            let at = from + i;
+            from = at + pat.len();
+            if l[..at].chars().next_back().is_some_and(is_ident_char) {
+                continue;
+            }
+            if let Some(v) = l[from..].trim_start().strip_prefix("==") {
+                let n: String = v.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
+                if let Ok(n) = n.parse::<usize>() {
+                    if (1..=520).contains(&n) {
+                        return Some(n);
+                    }
+                }
+            }
+        }
+        let mut from = 0;
+        while let Some(i) = l[from..].find("byte[") {
+            let at = from + i + 5;
+            from = at;
+            let n: String = l[at..].chars().take_while(|c| c.is_ascii_digit()).collect();
+            let Some(rest) = l[at + n.len()..].strip_prefix(']') else { continue };
+            if starts_with_ident(rest.trim_start(), arg) {
+                if let Ok(n) = n.parse::<usize>() {
+                    if (1..=520).contains(&n) {
+                        return Some(n);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The tool's secret behind the hash lock `name`: the text `redteam-secret:<name>`,
+/// or, when the source fixes the preimage's length (`require(secret.length == 32)`,
+/// `entry open(byte[32] secret)`), bytes of exactly that length derived from it.
+fn test_secret(source: &str, name: &str) -> Vec<u8> {
+    let text = format!("redteam-secret:{name}").into_bytes();
+    let Some(len) = hashed_arg(source, name).and_then(|arg| fixed_len(source, &arg)) else {
+        return text;
+    };
+    let mut out = Vec::with_capacity(len);
+    let mut block = sha256(&text);
+    while out.len() < len {
+        out.extend_from_slice(&block);
+        block = sha256(&block);
+    }
+    out.truncate(len);
+    out
+}
+
 /// Unkeyed blake2b-256, SilverScript's `blake2b()`.
 pub fn blake2b(b: &[u8]) -> Vec<u8> {
     blake2b_simd::Params::new().hash_length(32).hash(b).as_bytes().to_vec()
@@ -500,16 +629,10 @@ pub fn played_by_tool(source: &str, name: &str) -> Option<&'static str> {
         HashUse::SignedDigest => None,
         // Only a value the script actually hashes against is a lock; any other
         // byte[32] (an id, a template, a commitment) is the user's to give.
+        // A value that is only hashed into something else (an id inside a
+        // digest) is not a lock: the line must compare it with a hash.
         HashUse::SecretSha256 | HashUse::SecretBlake2b => {
-            let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
-            let hashed = source.lines().any(|l| {
-                (l.contains("sha256(") || l.contains("blake2b("))
-                    && l.match_indices(name).any(|(i, _)| {
-                        l[..i].chars().next_back().is_none_or(|c| !is_ident(c))
-                            && l[i + name.len()..].chars().next().is_none_or(|c| !is_ident(c))
-                    })
-            });
-            hashed.then_some("hash lock")
+            source.lines().any(|l| compares_to_hash(l, name)).then_some("hash lock")
         }
         HashUse::P2shTarget => None,
     }
@@ -657,12 +780,12 @@ fn default_value(
                 (ArtifactValue::Bytes(blake2b(text.as_bytes())), format!("hash of a test message ({text:?})"))
             }
             HashUse::SecretBlake2b => {
-                let preimage = format!("redteam-secret:{name}").into_bytes();
+                let preimage = test_secret(source, name);
                 secrets.push(Secret { label: name.into(), preimage: preimage.clone() });
                 (ArtifactValue::Bytes(blake2b(&preimage)), format!("blake2b(secret:{name})"))
             }
             HashUse::SecretSha256 => {
-                let preimage = format!("redteam-secret:{name}").into_bytes();
+                let preimage = test_secret(source, name);
                 secrets.push(Secret { label: name.into(), preimage: preimage.clone() });
                 (ArtifactValue::Bytes(sha256(&preimage)), format!("sha256(secret:{name})"))
             }
@@ -839,5 +962,35 @@ mod address_tests {
         assert!(parse_override(&p2sh, &TypeArtifact::Pubkey, &mut w).is_err());
         let typo = format!("{}x", &p2sh[..p2sh.len() - 1]);
         assert!(parse_override(&typo, &ty32, &mut w).is_err());
+    }
+}
+
+#[cfg(test)]
+mod secret_tests {
+    use super::*;
+
+    #[test]
+    fn secret_takes_the_length_the_source_fixes() {
+        let by_check = "entry open(byte[] preimage) {\n    require(preimage.length == 32);\n    require(sha256(preimage) == lockHash);\n}";
+        assert_eq!(test_secret(by_check, "lockHash").len(), 32);
+        let by_type = "entry open(byte[20] s) {\n    require(lockHash == blake2b(byte[](s)));\n}";
+        assert_eq!(test_secret(by_type, "lockHash").len(), 20);
+        // No length fixed: the readable text secret, as before.
+        let free = "entry open(byte[] s) {\n    require(sha256(s) == lockHash);\n}";
+        assert_eq!(test_secret(free, "lockHash"), b"redteam-secret:lockHash".to_vec());
+        // Derived bytes are stable and differ per name.
+        assert_eq!(test_secret(by_check, "lockHash"), test_secret(by_check, "lockHash"));
+        assert_ne!(test_secret(by_check, "lockHash"), test_secret(by_check, "otherHash"));
+    }
+
+    #[test]
+    fn only_a_value_compared_with_a_hash_is_a_lock() {
+        let lock = "contract C(byte[32] lockHash) {\n    entry open(byte[] s) {\n        require(sha256(s) == lockHash);\n    }\n}";
+        assert_eq!(played_by_tool(lock, "lockHash"), Some("hash lock"));
+        let cast = "contract C(byte[32] lockHash) {\n    entry open(byte[] s) {\n        require(byte[32](lockHash) == blake2b(s));\n    }\n}";
+        assert_eq!(played_by_tool(cast, "lockHash"), Some("hash lock"));
+        // An id hashed into a digest, or passed next to one, is the user's value.
+        let id = "contract C(byte[32] imageId) {\n    entry go(byte[] j) {\n        verifyIt(sha256(j), imageId);\n        byte[32] d = sha256(byte[](imageId) + j);\n    }\n}";
+        assert_eq!(played_by_tool(id, "imageId"), None);
     }
 }
